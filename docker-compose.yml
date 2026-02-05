@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # FastAPI Application
+  api:
+    build: .
+    container_name: richtv-bot-api
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL}
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - richtv-network
+    restart: unless-stopped
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: richtv-bot-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - richtv-network
+    restart: unless-stopped
+
+  # PostgreSQL for persistent storage
+  postgres:
+    image: postgres:15-alpine
+    container_name: richtv-bot-postgres
+    environment:
+      - POSTGRES_USER=richtv
+      - POSTGRES_PASSWORD=richtv_password
+      - POSTGRES_DB=richtv_bot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - richtv-network
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
+
+networks:
+  richtv-network:
+    driver: bridge
+
