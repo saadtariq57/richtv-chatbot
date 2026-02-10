@@ -43,8 +43,34 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
     print(f"   Confidence: {classification.confidence}")
     print(f"   Matched patterns: {classification.matched_patterns}")
     
+    # Handle GENERAL queries (answered by LLM without data fetching)
+    if QueryType.GENERAL in classification.query_types and classification.llm_answer:
+        print("GENERAL query detected with pre-generated answer")
+        context = build_context(user_query)
+        context["timestamp"] = datetime.utcnow().isoformat()
+        
+        return QueryResponse(
+            answer=classification.llm_answer,
+            citations=[Citation(source="LLM Knowledge", url="")],
+            confidence=0.80,  # Medium-high for general conceptual answers
+            data_timestamp=context["timestamp"],
+            context={
+                "sources_used": ["general"],
+                "classification_confidence": classification.confidence,
+                "data": context
+            }
+        )
+    
     # Step 2: Route to appropriate data sources based on classification
-    context = await fetch_data_by_classification(user_query, classification.query_types)
+    # If LLM extracted a ticker, inject it into the query for better context building
+    query_for_fetch = user_query
+    if classification.llm_ticker:
+        print(f"LLM extracted ticker: {classification.llm_ticker}")
+        query_for_fetch = f"{classification.llm_ticker} {user_query}"
+    
+    context = await fetch_data_by_classification(query_for_fetch, classification.query_types)
+    
+    print(f"Sample Context: {context}")
     
     # Step 3: Generate answer using LLM
     llm_answer = generate_answer(context, user_query)

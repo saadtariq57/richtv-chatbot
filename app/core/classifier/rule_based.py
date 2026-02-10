@@ -5,9 +5,10 @@ Implements keyword-based pattern matching for query classification.
 Fast, predictable, and cost-free classification.
 """
 
-from typing import List, Set, Dict
+from typing import List, Set, Dict, Optional, Tuple
 from app.core.classifier.types import QueryType, ClassificationResult
 from app.core.classifier.patterns import QueryPatterns
+from app.llm.generator import classify_and_answer_if_general
 
 
 class RuleBasedClassifier:
@@ -58,14 +59,38 @@ class RuleBasedClassifier:
         # Sort by relevance (priority order)
         sorted_types = self._sort_by_priority(matches)
         
-        # If no matches, default to PRICE
+        # If no matches, use LLM to classify and potentially answer
+        llm_answer = None
+        llm_ticker = None
         if not sorted_types:
-            sorted_types = [QueryType.PRICE]
+            classification, answer, ticker = classify_and_answer_if_general(query)
+            
+            if classification == "general":
+                # It's a general question, LLM has answered it
+                sorted_types = [QueryType.GENERAL]
+                confidence = "medium"  # LLM-assisted
+                llm_answer = answer
+                matched_patterns.append("llm:general")
+                
+            elif classification == "specific":
+                # It's about a specific stock
+                sorted_types = [QueryType.PRICE]
+                confidence = "medium"  # LLM-assisted
+                llm_ticker = ticker
+                matched_patterns.append(f"llm:specific:{ticker}")
+                
+            else:  # unclear
+                # Can't classify, default to PRICE with low confidence
+                sorted_types = [QueryType.PRICE]
+                confidence = "low"
+                matched_patterns.append("llm:unclear")
         
         result = ClassificationResult(
             query_types=sorted_types,
             confidence=confidence,
-            matched_patterns=matched_patterns
+            matched_patterns=matched_patterns,
+            llm_answer=llm_answer,
+            llm_ticker=llm_ticker
         )
         
         # Log for analysis

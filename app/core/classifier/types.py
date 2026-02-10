@@ -20,6 +20,7 @@ class QueryType(Enum):
     - NEWS: News articles and press releases (RAG)
     - MARKET: Market-wide data and indices (Mboum API - same endpoint as PRICE)
     - ANALYSIS: Investment analysis requiring multiple sources
+    - GENERAL: General financial questions (LLM knowledge only, no data fetch)
     """
     PRICE = "price"
     HISTORICAL = "historical"
@@ -27,6 +28,7 @@ class QueryType(Enum):
     NEWS = "news"
     MARKET = "market"
     ANALYSIS = "analysis"
+    GENERAL = "general"
     
     def __str__(self) -> str:
         """String representation."""
@@ -41,7 +43,8 @@ class QueryType(Enum):
             QueryType.FUNDAMENTALS: "FMP Fundamentals API",
             QueryType.NEWS: "RAG Vector Store",
             QueryType.MARKET: "Mboum API",
-            QueryType.ANALYSIS: "Multiple Sources"
+            QueryType.ANALYSIS: "Multiple Sources",
+            QueryType.GENERAL: "LLM Knowledge"
         }
         return source_mapping.get(self, "Unknown")
 
@@ -55,10 +58,14 @@ class ClassificationResult:
         query_types: List of detected query types (can be multiple)
         confidence: Confidence level - "high", "medium", or "low"
         matched_patterns: List of patterns that matched (for debugging)
+        llm_answer: Optional pre-generated answer from LLM (for GENERAL queries)
+        llm_ticker: Optional ticker extracted by LLM (for ambiguous queries)
     """
     query_types: List[QueryType]
     confidence: str  # "high" | "medium" | "low"
     matched_patterns: List[str]
+    llm_answer: str = None
+    llm_ticker: str = None
     
     def __str__(self) -> str:
         """Human-readable representation."""
