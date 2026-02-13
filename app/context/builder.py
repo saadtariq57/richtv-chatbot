@@ -204,17 +204,78 @@ _NON_TICKER_WORDS = {
     "YOUTHED", "ZONE", "ZONED",
 }
 
+# Common company names to ticker symbols mapping
+# Covers top US companies for better UX
+_COMPANY_TO_TICKER = {
+    # Tech Giants
+    "apple": "AAPL",
+    "microsoft": "MSFT",
+    "google": "GOOGL",
+    "alphabet": "GOOGL",
+    "amazon": "AMZN",
+    "meta": "META",
+    "facebook": "META",
+    "nvidia": "NVDA",
+    "tesla": "TSLA",
+    "netflix": "NFLX",
+    
+    # Other Major Companies
+    "disney": "DIS",
+    "boeing": "BA",
+    "walmart": "WMT",
+    "jpmorgan": "JPM",
+    "visa": "V",
+    "mastercard": "MA",
+    "coca-cola": "KO",
+    "coke": "KO",
+    "pepsi": "PEP",
+    "mcdonald": "MCD",
+    "mcdonalds": "MCD",
+    "starbucks": "SBUX",
+    "nike": "NKE",
+    "ford": "F",
+    "gm": "GM",
+    "general motors": "GM",
+    "intel": "INTC",
+    "amd": "AMD",
+    "qualcomm": "QCOM",
+    "oracle": "ORCL",
+    "salesforce": "CRM",
+    "adobe": "ADBE",
+    
+    # Indices (common names)
+    "s&p": "^GSPC",
+    "s&p 500": "^GSPC",
+    "sp500": "^GSPC",
+    "nasdaq": "^IXIC",
+    "dow": "^DJI",
+    "dow jones": "^DJI",
+}
+
 
 def _extract_ticker(user_query: str) -> Optional[str]:
     """
     Heuristic ticker extraction from user query.
 
     Prioritizes 2-5 letter tokens (typical ticker length) and filters
-    out common words. This is intentionally simple for MVP.
+    out common words. Also checks against a hardcoded mapping for
+    common company names.
     """
     text = user_query.upper()
+    text_lower = user_query.lower()
     
-    # First, look for 2-5 letter tokens (typical ticker length)
+    # First, check if query contains a known company name
+    for company_name, ticker in _COMPANY_TO_TICKER.items():
+        # Use word boundary to avoid partial matches (e.g. "meta" in "metadata")
+        if re.search(r'\b' + re.escape(company_name) + r'\b', text_lower):
+            return ticker
+    
+    # First, check for crypto-style tickers with hyphens (e.g., BTC-USD, ETH-USD)
+    crypto_candidates = re.findall(r"\b[A-Z]{2,5}-[A-Z]{2,5}\b", text)
+    if crypto_candidates:
+        return crypto_candidates[0]
+    
+    # Then, look for 2-5 letter tokens (typical ticker length)
     candidates_2_5 = re.findall(r"\b[A-Z]{2,5}\b", text)
     for token in candidates_2_5:
         if token not in _NON_TICKER_WORDS:
@@ -227,6 +288,60 @@ def _extract_ticker(user_query: str) -> Optional[str]:
             return token
     
     return None
+
+
+def is_valid_ticker(ticker: Optional[str]) -> bool:
+    """
+    Check if extracted ticker looks valid.
+    
+    Used to determine if LLM assistance is needed.
+    
+    Args:
+        ticker: Extracted ticker string
+        
+    Returns:
+        True if ticker looks valid, False otherwise
+    """
+    if not ticker or ticker == "UNKNOWN":
+        return False
+    
+    # Real tickers are typically 1-5 characters
+    if len(ticker) > 5:
+        return False
+    
+    ticker_lower = ticker.lower()
+    
+    # Check if it's a known company name that wasn't resolved
+    # (This would indicate ticker extraction failed)
+    if ticker_lower in _COMPANY_TO_TICKER:
+        # It's a company name, not a ticker symbol
+        return False
+    
+    # Extended list of company names that might slip through
+    invalid_names = {
+        "apple", "microsoft", "tesla", "amazon", "google",
+        "nvidia", "meta", "facebook", "netflix", "figma",
+        "adobe", "oracle", "intel", "cisco", "uber",
+        "lyft", "snap", "twitter", "zoom", "slack"
+    }
+    if ticker_lower in invalid_names:
+        return False
+    
+    # Heuristic: if ticker is 4-5 chars and looks like a pronounceable word
+    # (has vowels in word-like patterns), it's likely a company name, not a ticker
+    # Real tickers are usually acronyms (e.g., AAPL, MSFT, NVDA)
+    if len(ticker) >= 4:
+        # Count consecutive vowels - company names tend to have them
+        vowel_pattern = re.search(r'[aeiou]{2,}', ticker_lower)
+        if vowel_pattern:
+            # Has consecutive vowels (e.g., "figma" has "i"), likely a word
+            return False
+        
+        # Check if it's all lowercase or mixed case (would indicate it wasn't properly extracted)
+        if ticker != ticker.upper():
+            return False
+    
+    return True
 
 
 def build_context(user_query: str) -> dict:

@@ -11,11 +11,12 @@ import asyncio
 
 from app.api.schemas import QueryResponse, Citation
 from app.core.classifier import get_classifier, QueryType
-from app.context.builder import build_context
-from app.llm.generator import generate_answer
+from app.context.builder import build_context, is_valid_ticker
+from app.llm.generator import generate_answer, llm_quick_check, llm_extract_company_name
 from app.core.validator import validate_response
 from app.data_fetchers.price_fetcher import PriceFetcher
 from app.data_fetchers.fmp_fetcher import FMPFetcher
+from app.utils.ticker_resolver import resolve_ticker, extract_company_name_from_query
 
 
 async def orchestrate_query(user_query: str) -> QueryResponse:
@@ -42,6 +43,71 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
     print(f"Query classified as: {[qt.value for qt in classification.query_types]}")
     print(f"   Confidence: {classification.confidence}")
     print(f"   Matched patterns: {classification.matched_patterns}")
+    
+    # Step 1.5: LLM Quick Check for low/medium confidence (Tier 2 assistance)
+    # Helps catch queries that rule-based patterns miss or misclassify
+    if classification.confidence in ["low", "medium"] and not classification.llm_answer:
+        print(f"Low/medium confidence detected - using LLM quick check")
+        intent, llm_ticker = llm_quick_check(user_query)
+        print(f"   LLM quick check result: intent={intent}, ticker={llm_ticker}")
+        
+        if intent == "needs_data" and llm_ticker:
+            # LLM identified a specific stock query with ticker
+            # Override classification to PRICE with extracted ticker
+            classification.query_types = [QueryType.PRICE]
+            classification.llm_ticker = llm_ticker
+            classification.confidence = "medium"  # LLM-assisted
+            print(f"   Reclassified as PRICE with ticker: {llm_ticker}")
+            
+        elif intent == "general":
+            # LLM identified this as a conceptual question
+            # We need to make another call to get the answer
+            from app.llm.generator import classify_and_answer_if_general
+            _, answer, _ = classify_and_answer_if_general(user_query)
+            if answer:
+                classification.query_types = [QueryType.GENERAL]
+                classification.llm_answer = answer
+                classification.confidence = "medium"
+                print(f"   Reclassified as GENERAL with LLM answer")
+        
+        # If intent is "unclear", keep original classification (might fail gracefully)
+    
+    # Step 1.6: Additional check for invalid tickers (even if confidence is high)
+    # This catches cases like "Apple" being extracted as "APPLE" instead of "AAPL"
+    if not classification.llm_ticker and not classification.llm_answer:
+        # Build a temporary context to check the ticker
+        temp_context = build_context(user_query)
+        extracted_ticker = temp_context.get("ticker")
+        
+        # If ticker looks invalid, try multiple resolution strategies
+        if not is_valid_ticker(extracted_ticker):
+            print(f"Invalid ticker detected: '{extracted_ticker}' - attempting resolution")
+            
+            # Strategy 1: Try Mboum search (best for new IPOs and comprehensive coverage)
+            company_name = extract_company_name_from_query(user_query)
+            if company_name:
+                print(f"   Trying Mboum search for: '{company_name}'")
+                mboum_ticker = await resolve_ticker(company_name)
+                if mboum_ticker:
+                    classification.llm_ticker = mboum_ticker
+                    print(f"   Mboum resolved ticker: {mboum_ticker}")
+                else:
+                    # Strategy 2: Fallback to LLM (for well-known companies in training data)
+                    print(f"   Mboum search failed, trying LLM fallback")
+                    intent, llm_ticker = llm_quick_check(user_query)
+                    print(f"   LLM quick check result: intent={intent}, ticker={llm_ticker}")
+                    
+                    if intent == "needs_data" and llm_ticker:
+                        classification.llm_ticker = llm_ticker
+                        print(f"   Using LLM-extracted ticker: {llm_ticker}")
+                    elif intent == "general":
+                        # Actually a general question, not a ticker query
+                        from app.llm.generator import classify_and_answer_if_general
+                        _, answer, _ = classify_and_answer_if_general(user_query)
+                        if answer:
+                            classification.query_types = [QueryType.GENERAL]
+                            classification.llm_answer = answer
+                            print(f"   Reclassified as GENERAL")
     
     # Handle GENERAL queries (answered by LLM without data fetching)
     if QueryType.GENERAL in classification.query_types and classification.llm_answer:
@@ -90,6 +156,66 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
             "data": context
         }
     )
+    
+    # Step 6: Post-Failure LLM Rescue (Option A)
+    # If we got "insufficient data", try one more time with LLM-extracted company name
+    if "insufficient data" in response.answer.lower() and confidence < 0.5:
+        print("Insufficient data detected - attempting LLM rescue")
+        
+        # Use LLM to extract company/asset name
+        llm_company_name = await llm_extract_company_name(user_query)
+        
+        if llm_company_name:
+            print(f"   LLM extracted company name: '{llm_company_name}'")
+            
+            # Try to resolve ticker via Mboum search
+            rescue_ticker = await resolve_ticker(llm_company_name)
+            
+            if rescue_ticker:
+                print(f"   Resolved to ticker: {rescue_ticker}")
+                
+                # Rebuild the query with the correct ticker
+                rescue_query = f"{rescue_ticker} {user_query}"
+                
+                # Re-fetch data with the correct ticker
+                rescue_context = await fetch_data_by_classification(
+                    rescue_query,
+                    classification.query_types
+                )
+                
+                # Check if we actually got data this time
+                if rescue_context.get("price") or rescue_context.get("historical_data"):
+                    print("   Rescue successful! Re-generating answer with new data")
+                    
+                    # Re-generate answer with new context
+                    rescue_answer = generate_answer(rescue_context, user_query)
+                    rescue_validated, rescue_confidence = validate_response(
+                        rescue_answer, rescue_context
+                    )
+                    
+                    # Build new response with rescued data
+                    response = QueryResponse(
+                        answer=rescue_validated,
+                        citations=extract_citations(rescue_context),
+                        confidence=rescue_confidence,
+                        data_timestamp=rescue_context.get(
+                            "timestamp", datetime.utcnow().isoformat()
+                        ),
+                        context={
+                            "sources_used": [qt.value for qt in classification.query_types],
+                            "classification_confidence": classification.confidence,
+                            "data": rescue_context,
+                            "rescue_applied": True,
+                            "llm_extracted_name": llm_company_name
+                        }
+                    )
+                    print(f"   Final rescue confidence: {rescue_confidence:.2f}")
+                else:
+                    print("   Rescue failed - still no data available")
+            else:
+                print("   Could not resolve company name to ticker")
+        else:
+            print("   LLM could not extract company name")
     
     return response
 
@@ -226,7 +352,7 @@ async def fetch_data_by_classification(
 
 
 def extract_citations(context: Dict) -> List[Citation]:
-    """
+    """ 
     Extract citations from context data.
     
     For now: Returns empty list (no external sources yet)

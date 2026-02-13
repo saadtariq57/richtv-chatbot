@@ -1,11 +1,11 @@
-import requests
 import json
-from typing import Dict, Optional, Tuple
-from app.config import settings
+from typing import Optional, Tuple
+from app.llm.client import get_llm_client
+
 
 def generate_answer(context: dict, user_query: str) -> str:
     """
-    Generate an answer using Gemini LLM based on structured context.
+    Generate an answer using LLM based on structured context.
     
     Args:
         context: Structured financial data from fetchers
@@ -14,12 +14,8 @@ def generate_answer(context: dict, user_query: str) -> str:
     Returns:
         Generated answer text
     """
-    # Build URL with API key from config
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_api_key}"
-    headers = {"Content-Type": "application/json"}
-    
     # Create prompt with strict instructions
-    prompt_text = f"""
+    prompt = f"""
 You are RichTVBot, a financial assistant. Only use the following financial data. 
 Do not invent numbers. Answer the user's question based only on this data.
 If the data is insufficient, respond with "I have insufficient data to answer this question."
@@ -30,34 +26,14 @@ User Question: {user_query}
 
 Answer:"""
     
-    # Prepare API body
-    body = {
-        "contents": [
-            {
-                "parts": [{"text": prompt_text}]
-            }
-        ]
-    }
+    # Use LLM client
+    llm = get_llm_client()
+    response = llm.generate(prompt, temperature=0.3)
     
-    try:
-        # Make POST request
-        resp = requests.post(url, headers=headers, json=body, timeout=10)
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            # Gemini `generateContent` response format:
-            # data["candidates"][0]["content"]["parts"][0]["text"]
-            answer = data["candidates"][0]["content"]["parts"][0]["text"]
-            return answer.strip()
-        else:
-            return f"LLM API Error: {resp.status_code}"
-            
-    except requests.exceptions.Timeout:
-        return "LLM request timed out"
-    except requests.exceptions.RequestException as e:
-        return f"LLM request failed: {str(e)}"
-    except (KeyError, IndexError) as e:
-        return f"Error parsing LLM response: {str(e)}"
+    if response:
+        return response
+    else:
+        return "I have insufficient data to answer this question."
 
 
 def classify_and_answer_if_general(user_query: str) -> Tuple[str, Optional[str], Optional[str]]:
@@ -78,10 +54,7 @@ def classify_and_answer_if_general(user_query: str) -> Tuple[str, Optional[str],
         - ("specific", None, "NVDA") if specific stock query
         - ("unclear", None, None) if off-topic/unclear
     """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_api_key}"
-    headers = {"Content-Type": "application/json"}
-    
-    prompt_text = f"""
+    prompt = f"""
 You are a financial query analyzer. Analyze this user query and respond in ONE of these formats:
 
 1. If it's a GENERAL financial/investing question (concepts, definitions, how things work):
@@ -106,37 +79,115 @@ User Query: "{user_query}"
 
 Your Response:"""
     
-    body = {
-        "contents": [{"parts": [{"text": prompt_text}]}]
-    }
+    # Use LLM client
+    llm = get_llm_client()
+    response = llm.generate(prompt, temperature=0.3)
     
-    try:
-        resp = requests.post(url, headers=headers, json=body, timeout=10)
+    if not response:
+        return ("unclear", None, None)
+    
+    # Parse the response
+    if response.startswith("ANSWER:"):
+        # It's a general question with an answer
+        clean_answer = response.replace("ANSWER:", "").strip()
+        return ("general", clean_answer, None)
         
-        if resp.status_code != 200:
-            return ("unclear", None, None)
-            
-        data = resp.json()
-        answer = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    elif response.startswith("NEEDS_DATA:"):
+        # It's a specific stock query
+        ticker = response.replace("NEEDS_DATA:", "").strip()
+        return ("specific", None, ticker)
         
-        # Parse the response
-        if answer.startswith("ANSWER:"):
-            # It's a general question with an answer
-            clean_answer = answer.replace("ANSWER:", "").strip()
-            return ("general", clean_answer, None)
-            
-        elif answer.startswith("NEEDS_DATA:"):
-            # It's a specific stock query
-            ticker = answer.replace("NEEDS_DATA:", "").strip()
-            return ("specific", None, ticker)
-            
-        else:  # CANNOT_ANSWER or unexpected format
-            return ("unclear", None, None)
-            
-    except requests.exceptions.Timeout:
+    else:  # CANNOT_ANSWER or unexpected format
         return ("unclear", None, None)
-    except requests.exceptions.RequestException:
-        return ("unclear", None, None)
-    except (KeyError, IndexError):
-        return ("unclear", None, None)
+
+
+def llm_quick_check(user_query: str) -> Tuple[str, Optional[str]]:
+    """
+    Lightweight LLM check for queries with low/medium confidence.
+    
+    Used when rule-based classification is uncertain.
+    Much cheaper and faster than full classification+answer.
+    
+    Args:
+        user_query: User's question
+        
+    Returns:
+        Tuple of (intent, ticker):
+        - ("needs_data", "NVDA") if about specific stock
+        - ("general", None) if conceptual question
+        - ("unclear", None) if off-topic
+    """
+    prompt = f"""
+Quick intent check for: "{user_query}"
+
+Respond with ONE line only:
+- DATA:<TICKER> (if asking about a specific stock/company, provide ticker symbol)
+- GENERAL (if asking a conceptual/educational financial question)
+- UNCLEAR (if off-topic or can't determine)
+
+Examples:
+- "Should I invest in tech stocks?" → GENERAL
+- "Tell me about Apple stock" → DATA:AAPL
+- "What's NVDA trading at?" → DATA:NVDA
+- "How does compound interest work?" → GENERAL
+- "What's the weather?" → UNCLEAR
+
+Response:"""
+    
+    # Use LLM client
+    llm = get_llm_client()
+    response = llm.generate(prompt, temperature=0.2)
+    
+    if not response:
+        return ("unclear", None)
+    
+    # Parse response
+    if response.startswith("DATA:"):
+        ticker = response.replace("DATA:", "").strip()
+        return ("needs_data", ticker)
+    elif response.startswith("GENERAL"):
+        return ("general", None)
+    else:
+        return ("unclear", None)
+
+
+async def llm_extract_company_name(user_query: str) -> Optional[str]:
+    """
+    Use LLM to extract company/asset name from query.
+    
+    This is a fallback when regex-based extraction fails.
+    Used in post-failure rescue when initial query returns insufficient data.
+    
+    Args:
+        user_query: User's original question
+        
+    Returns:
+        Extracted company/asset name or None
+    """
+    llm = get_llm_client()
+    
+    prompt = f"""
+Extract ONLY the company or asset name from this query. Return just the name, nothing else.
+
+Examples:
+- "What's Figma trading at?" → Figma
+- "Tell me Nvidia's price" → Nvidia
+- "How much for Tesla?" → Tesla
+- "Show me Apple stock" → Apple
+- "Bitcoin value?" → Bitcoin
+- "Price of Coinbase?" → Coinbase
+- "What is SAP worth?" → SAP
+
+Query: "{user_query}"
+
+Answer (company/asset name only):"""
+    
+    response = await llm.generate_async(prompt, temperature=0.1)
+    
+    if response:
+        # Clean up the response
+        cleaned = response.strip().strip('"\'.,!?')
+        return cleaned if cleaned else None
+    
+    return None
 
