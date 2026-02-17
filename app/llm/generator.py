@@ -1,5 +1,5 @@
 import json
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from app.llm.client import get_llm_client
 
 
@@ -190,4 +190,166 @@ Answer (company/asset name only):"""
         return cleaned if cleaned else None
     
     return None
+
+
+def llm_classify_query(user_query: str) -> Tuple[str, str, Optional[str], Optional[str], Optional[List[str]]]:
+    """
+    Use LLM to classify query intent and extract entity/symbols.
+    
+    OPTIMIZED: Answers general queries immediately in one call!
+    SMART: For market queries, LLM determines which symbols to fetch!
+    
+    This replaces the rule-based classification system with a more flexible
+    LLM-based approach that understands informal language and context.
+    
+    Args:
+        user_query: User's question
+        
+    Returns:
+        Tuple of (query_type, confidence, entity, answer, symbols_list):
+        - query_type: "price", "historical", "fundamentals", "analysis", "market", or "general"
+        - confidence: "high", "medium", or "low"
+        - entity: Extracted entity (company name, ticker, asset) or None
+        - answer: Complete answer if general query, None if needs data fetching
+        - symbols_list: List of symbols to fetch (only for MARKET queries)
+    """
+    prompt = f"""
+You are a financial query classifier and data planner.
+
+IMPORTANT: 
+1. If the query is a GENERAL conceptual question, provide a complete answer immediately.
+2. If the query is a MARKET overview request, provide a LIST of symbols to fetch.
+3. For other data queries, just extract the entity.
+
+Query Types:
+1. PRICE - Single asset price
+   → Extract entity, NO answer
+   
+2. HISTORICAL - Single asset history
+   → Extract entity, NO answer
+   
+3. FUNDAMENTALS - Single asset financials
+   → Extract entity, NO answer
+   
+4. ANALYSIS - Single asset analysis
+   → Extract entity, NO answer
+   
+5. MARKET - Market overview (REQUIRES MULTIPLE SYMBOLS!)
+   → Provide symbol list based on context
+   → Include: Major indices, top stocks, crypto, commodities
+   → Adapt based on query focus (tech, crypto, general, etc.)
+   
+6. GENERAL - Conceptual questions
+   → Provide COMPLETE answer immediately
+
+MARKET Query Guidelines:
+- General market: Include indices (^GSPC, ^DJI, ^IXIC), top stocks (AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA), crypto (BTC-USD, ETH-USD), commodities (GC=F, CL=F)
+- Tech focus: Nasdaq (^IXIC), tech giants (AAPL, MSFT, NVDA, GOOGL, META, AMZN, TSLA)
+- Crypto focus: Major cryptos (BTC-USD, ETH-USD, SOL-USD, BNB-USD, XRP-USD, ADA-USD)
+- Commodities focus: Gold (GC=F), Silver (SI=F), Oil (CL=F), Natural Gas (NG=F)
+- MAX 20 symbols total
+
+Response Format:
+
+For MARKET queries:
+TYPE: market
+CONFIDENCE: [high/medium/low]
+ENTITY: NONE
+SYMBOLS: ^GSPC, ^DJI, ^IXIC, AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA, BTC-USD, ETH-USD, GC=F, CL=F
+ANSWER: NONE
+
+For PRICE/HISTORICAL/FUNDAMENTALS/ANALYSIS queries:
+TYPE: [price/historical/fundamentals/analysis]
+CONFIDENCE: [high/medium/low]
+ENTITY: [company/ticker name]
+SYMBOLS: NONE
+ANSWER: NONE
+
+For GENERAL queries:
+TYPE: general
+CONFIDENCE: [high/medium/low]
+ENTITY: NONE
+SYMBOLS: NONE
+ANSWER: [complete answer]
+
+Examples:
+
+Query: "Give me market update"
+TYPE: market
+CONFIDENCE: high
+ENTITY: NONE
+SYMBOLS: ^GSPC, ^DJI, ^IXIC, AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA, BTC-USD, ETH-USD, GC=F, CL=F
+ANSWER: NONE
+
+Query: "How's tech doing?"
+TYPE: market
+CONFIDENCE: high
+ENTITY: NONE
+SYMBOLS: ^IXIC, AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA, META
+ANSWER: NONE
+
+Query: "Crypto market update"
+TYPE: market
+CONFIDENCE: high
+ENTITY: NONE
+SYMBOLS: BTC-USD, ETH-USD, SOL-USD, BNB-USD, XRP-USD, ADA-USD
+ANSWER: NONE
+
+Query: "What's Apple price?"
+TYPE: price
+CONFIDENCE: high
+ENTITY: Apple
+SYMBOLS: NONE
+ANSWER: NONE
+
+Query: "What is a dividend?"
+TYPE: general
+CONFIDENCE: high
+ENTITY: NONE
+SYMBOLS: NONE
+ANSWER: A dividend is a payment made by a corporation to its shareholders, usually as a distribution of profits. Companies pay dividends on a per-share basis, typically quarterly.
+
+User Query: "{user_query}"
+
+Your Response:"""
+    
+    llm = get_llm_client()
+    response = llm.generate(prompt, temperature=0.3)
+    
+    if not response:
+        return ("general", "low", None, None, None)
+    
+    # Parse the response
+    query_type = "general"
+    confidence = "low"
+    entity = None
+    answer = None
+    symbols_list = None
+    
+    for line in response.split('\n'):
+        line = line.strip()
+        if line.startswith("TYPE:"):
+            query_type = line.replace("TYPE:", "").strip().lower()
+        elif line.startswith("CONFIDENCE:"):
+            confidence = line.replace("CONFIDENCE:", "").strip().lower()
+        elif line.startswith("ENTITY:"):
+            entity_val = line.replace("ENTITY:", "").strip()
+            if entity_val and entity_val.upper() != "NONE":
+                entity = entity_val
+        elif line.startswith("SYMBOLS:"):
+            symbols_val = line.replace("SYMBOLS:", "").strip()
+            if symbols_val and symbols_val.upper() != "NONE":
+                # Parse comma-separated symbols
+                symbols_list = [s.strip() for s in symbols_val.split(",") if s.strip()]
+        elif line.startswith("ANSWER:"):
+            answer_val = line.replace("ANSWER:", "").strip()
+            if answer_val and answer_val.upper() != "NONE":
+                # Collect all remaining lines as the answer
+                answer_start = response.find("ANSWER:")
+                answer = response[answer_start + 7:].strip()
+                if answer.upper() == "NONE":
+                    answer = None
+                break
+    
+    return (query_type, confidence, entity, answer, symbols_list)
 

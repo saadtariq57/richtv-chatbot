@@ -13,6 +13,27 @@ from app.config import settings
 # US exchanges to prioritize
 US_EXCHANGES = ['NYSE', 'NASDAQ', 'NYSEARCA', 'AMEX']
 
+# Default market overview symbols (backup if LLM doesn't provide any)
+DEFAULT_MARKET_SYMBOLS = [
+    # Major Indices
+    "^GSPC",    # S&P 500
+    "^DJI",     # Dow Jones
+    "^IXIC",    # Nasdaq
+    # Top Tech Stocks
+    "AAPL",     # Apple
+    "MSFT",     # Microsoft
+    "NVDA",     # NVIDIA
+    "GOOGL",    # Google
+    "AMZN",     # Amazon
+    "TSLA",     # Tesla
+    # Major Crypto
+    "BTC-USD",  # Bitcoin
+    "ETH-USD",  # Ethereum
+    # Key Commodities
+    "GC=F",     # Gold
+    "CL=F",     # Crude Oil
+]
+
 
 async def resolve_ticker(company_name: str) -> Optional[str]:
     """
@@ -163,6 +184,64 @@ def filter_best_ticker(search_results: List[Dict]) -> Optional[str]:
     return None
 
 
+async def resolve_entity_to_symbol(entity: str) -> Optional[Dict]:
+    """
+    Resolve any entity (company name, ticker, crypto) to a proper symbol.
+    
+    This is the main entry point for entity resolution in the orchestration flow.
+    Always uses Mboum Search API to find the best match.
+    
+    Args:
+        entity: Raw entity from LLM (e.g., "Apple", "BTC", "Tesla", "Ethereum")
+        
+    Returns:
+        Dict with resolved symbol and metadata, or None if not found:
+        {
+            'symbol': 'AAPL',
+            'name': 'Apple Inc.',
+            'type': 'EQUITY',
+            'exchange': 'NASDAQ',
+            'score': 1.0
+        }
+    """
+    if not entity:
+        return None
+    
+    # Search Mboum for the entity
+    results = await search_mboum(entity)
+    
+    if not results:
+        print(f"Entity resolution: No results found for '{entity}'")
+        return None
+    
+    # Get best matching symbol
+    best_symbol = filter_best_ticker(results)
+    
+    if not best_symbol:
+        return None
+    
+    # Find the full result for the best symbol
+    best_result = next((r for r in results if r.get('symbol') == best_symbol), None)
+    
+    if best_result:
+        return {
+            'symbol': best_result.get('symbol'),
+            'name': best_result.get('longname') or best_result.get('shortname', ''),
+            'type': best_result.get('quoteType', ''),
+            'exchange': best_result.get('exchDisp', ''),
+            'score': best_result.get('score', 0)
+        }
+    
+    # Fallback: just return symbol
+    return {
+        'symbol': best_symbol,
+        'name': '',
+        'type': '',
+        'exchange': '',
+        'score': 0
+    }
+
+
 def extract_company_name_from_query(query: str) -> Optional[str]:
     """
     Extract likely company name from user query.
@@ -207,4 +286,54 @@ def extract_company_name_from_query(query: str) -> Optional[str]:
         return clean_tokens[0].capitalize()
     
     return None
+
+
+def validate_symbols(symbols: List[str], max_symbols: int = 20) -> List[str]:
+    """
+    Validate and clean symbol list from LLM.
+    
+    Rules:
+    1. Remove duplicates
+    2. Remove empty/invalid symbols
+    3. Limit to max_symbols
+    4. Basic format validation
+    
+    Args:
+        symbols: List of symbols from LLM
+        max_symbols: Maximum number of symbols to return (default: 20)
+        
+    Returns:
+        Cleaned and validated list of symbols
+    """
+    if not symbols:
+        return []
+    
+    validated = []
+    seen = set()
+    
+    for symbol in symbols:
+        # Clean the symbol
+        symbol = symbol.strip().upper()
+        
+        # Skip empty or already seen
+        if not symbol or symbol in seen:
+            continue
+        
+        # Basic validation: should contain alphanumeric chars
+        # Valid formats: AAPL, BTC-USD, ^GSPC, GC=F
+        if not any(c.isalnum() for c in symbol):
+            continue
+        
+        # Skip if too long (likely invalid)
+        if len(symbol) > 15:
+            continue
+        
+        validated.append(symbol)
+        seen.add(symbol)
+        
+        # Stop at max limit
+        if len(validated) >= max_symbols:
+            break
+    
+    return validated
 

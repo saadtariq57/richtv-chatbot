@@ -10,25 +10,117 @@ from typing import Dict, List
 import asyncio
 
 from app.api.schemas import QueryResponse, Citation
-from app.core.classifier import get_classifier, QueryType
+# Rule-based classifier - KEPT FOR REFERENCE BUT NOT USED
+# from app.core.classifier import get_classifier, QueryType
+from app.core.classifier import QueryType  # Keep QueryType enum for compatibility
 from app.context.builder import build_context, is_valid_ticker
-from app.llm.generator import generate_answer, llm_quick_check, llm_extract_company_name
+from app.llm.generator import (
+    generate_answer, 
+    llm_classify_query,  # NEW: LLM-based classification (optimized)
+)
 from app.core.validator import validate_response
 from app.data_fetchers.price_fetcher import PriceFetcher
 from app.data_fetchers.fmp_fetcher import FMPFetcher
-from app.utils.ticker_resolver import resolve_ticker, extract_company_name_from_query
+from app.utils.ticker_resolver import (
+    resolve_entity_to_symbol,
+    validate_symbols,
+    DEFAULT_MARKET_SYMBOLS
+)
+
+
+async def fetch_multiple_symbols(symbols: List[str]) -> Dict[str, Dict]:
+    """
+    Fetch price data for multiple symbols in parallel.
+    
+    Used for market overview queries where we need data for many symbols at once.
+    
+    Args:
+        symbols: List of ticker symbols to fetch
+        
+    Returns:
+        Dict mapping symbol → price data
+        Only includes successful fetches
+    """
+    if not symbols:
+        return {}
+    
+    print(f"📊 Fetching data for {len(symbols)} symbols in parallel...")
+    
+    price_fetcher = PriceFetcher()
+    
+    # Create fetch tasks for all symbols
+    tasks = [price_fetcher.fetch_with_timeout(symbol) for symbol in symbols]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Process results
+    data = {}
+    success_count = 0
+    
+    for symbol, result in zip(symbols, results):
+        if isinstance(result, Exception):
+            print(f"   ⚠️  {symbol}: Failed ({str(result)[:50]})")
+            continue
+        
+        if isinstance(result, dict) and result.get("status") == "success":
+            data[symbol] = result
+            success_count += 1
+            print(f"   ✅ {symbol}: ${result.get('price', 'N/A')}")
+        else:
+            print(f"   ⚠️  {symbol}: No data")
+    
+    print(f"📊 Successfully fetched {success_count}/{len(symbols)} symbols")
+    
+    return data
+
+
+def categorize_market_data(data: Dict[str, Dict]) -> Dict:
+    """
+    Organize fetched market data into categories for better LLM presentation.
+    
+    Categories:
+    - indices: Major market indices (^GSPC, ^DJI, etc.)
+    - stocks: Individual stocks (AAPL, MSFT, etc.)
+    - crypto: Cryptocurrencies (BTC-USD, ETH-USD, etc.)
+    - commodities: Commodities (GC=F, CL=F, etc.)
+    
+    Args:
+        data: Dict of symbol → price data
+        
+    Returns:
+        Categorized dict with organized market data
+    """
+    categorized = {
+        "indices": {},
+        "stocks": {},
+        "crypto": {},
+        "commodities": {}
+    }
+    
+    for symbol, info in data.items():
+        if symbol.startswith("^"):
+            # Index (^GSPC, ^DJI, ^IXIC)
+            categorized["indices"][symbol] = info
+        elif "-USD" in symbol or "-USDT" in symbol:
+            # Cryptocurrency (BTC-USD, ETH-USD)
+            categorized["crypto"][symbol] = info
+        elif "=F" in symbol:
+            # Commodity futures (GC=F, CL=F)
+            categorized["commodities"][symbol] = info
+        else:
+            # Regular stock (AAPL, MSFT, NVDA)
+            categorized["stocks"][symbol] = info
+    
+    return categorized
 
 
 async def orchestrate_query(user_query: str) -> QueryResponse:
     """
-    Main orchestration flow with intelligent classification-based routing.
+    OPTIMIZED orchestration flow with LLM-first classification.
     
     Flow:
-    1. Classify query → determine data sources needed
-    2. Fetch data from appropriate sources
-    3. Generate LLM answer
-    4. Validate response
-    5. Return structured response
+    1. LLM classifies query & answers general queries immediately (1 call)
+    2. For data queries: Resolve entity → Fetch data → Generate answer
+    3. Validate and return response
     
     Args:
         user_query: User's financial question
@@ -36,196 +128,241 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
     Returns:
         QueryResponse with validated answer and metadata
     """
-    # Step 1: Classify the query
-    classifier = get_classifier()
-    classification = classifier.classify(user_query)
+    # ========================================================================
+    # STEP 1: LLM Classification (OPTIMIZED & SMART)
+    # ========================================================================
+    # This single LLM call does three things:
+    # 1. Classify the query type
+    # 2. Answer immediately if it's a general query (no data needed)
+    # 3. For MARKET queries, determine which symbols to fetch
+    # ========================================================================
     
-    print(f"Query classified as: {[qt.value for qt in classification.query_types]}")
-    print(f"   Confidence: {classification.confidence}")
-    print(f"   Matched patterns: {classification.matched_patterns}")
+    query_type_str, confidence, entity, general_answer, symbols_list = llm_classify_query(user_query)
     
-    # Step 1.5: LLM Quick Check for low/medium confidence (Tier 2 assistance)
-    # Helps catch queries that rule-based patterns miss or misclassify
-    if classification.confidence in ["low", "medium"] and not classification.llm_answer:
-        print(f"Low/medium confidence detected - using LLM quick check")
-        intent, llm_ticker = llm_quick_check(user_query)
-        print(f"   LLM quick check result: intent={intent}, ticker={llm_ticker}")
-        
-        if intent == "needs_data" and llm_ticker:
-            # LLM identified a specific stock query with ticker
-            # Override classification to PRICE with extracted ticker
-            classification.query_types = [QueryType.PRICE]
-            classification.llm_ticker = llm_ticker
-            classification.confidence = "medium"  # LLM-assisted
-            print(f"   Reclassified as PRICE with ticker: {llm_ticker}")
-            
-        elif intent == "general":
-            # LLM identified this as a conceptual question
-            # We need to make another call to get the answer
-            from app.llm.generator import classify_and_answer_if_general
-            _, answer, _ = classify_and_answer_if_general(user_query)
-            if answer:
-                classification.query_types = [QueryType.GENERAL]
-                classification.llm_answer = answer
-                classification.confidence = "medium"
-                print(f"   Reclassified as GENERAL with LLM answer")
-        
-        # If intent is "unclear", keep original classification (might fail gracefully)
+    print(f"✨ LLM Classification:")
+    print(f"   Type: {query_type_str}")
+    print(f"   Confidence: {confidence}")
+    print(f"   Entity: {entity if entity else 'None'}")
+    print(f"   Symbols: {symbols_list if symbols_list else 'None'}")
+    print(f"   General Answer: {'Provided' if general_answer else 'None (needs data)'}")
     
-    # Step 1.6: Additional check for invalid tickers (even if confidence is high)
-    # This catches cases like "Apple" being extracted as "APPLE" instead of "AAPL"
-    if not classification.llm_ticker and not classification.llm_answer:
-        # Build a temporary context to check the ticker
-        temp_context = build_context(user_query)
-        extracted_ticker = temp_context.get("ticker")
-        
-        # If ticker looks invalid, try multiple resolution strategies
-        if not is_valid_ticker(extracted_ticker):
-            print(f"Invalid ticker detected: '{extracted_ticker}' - attempting resolution")
-            
-            # Strategy 1: Try Mboum search (best for new IPOs and comprehensive coverage)
-            company_name = extract_company_name_from_query(user_query)
-            if company_name:
-                print(f"   Trying Mboum search for: '{company_name}'")
-                mboum_ticker = await resolve_ticker(company_name)
-                if mboum_ticker:
-                    classification.llm_ticker = mboum_ticker
-                    print(f"   Mboum resolved ticker: {mboum_ticker}")
-                else:
-                    # Strategy 2: Fallback to LLM (for well-known companies in training data)
-                    print(f"   Mboum search failed, trying LLM fallback")
-                    intent, llm_ticker = llm_quick_check(user_query)
-                    print(f"   LLM quick check result: intent={intent}, ticker={llm_ticker}")
-                    
-                    if intent == "needs_data" and llm_ticker:
-                        classification.llm_ticker = llm_ticker
-                        print(f"   Using LLM-extracted ticker: {llm_ticker}")
-                    elif intent == "general":
-                        # Actually a general question, not a ticker query
-                        from app.llm.generator import classify_and_answer_if_general
-                        _, answer, _ = classify_and_answer_if_general(user_query)
-                        if answer:
-                            classification.query_types = [QueryType.GENERAL]
-                            classification.llm_answer = answer
-                            print(f"   Reclassified as GENERAL")
+    # Map string query type to QueryType enum
+    query_type_mapping = {
+        "price": QueryType.PRICE,
+        "historical": QueryType.HISTORICAL,
+        "fundamentals": QueryType.FUNDAMENTALS,
+        "analysis": QueryType.ANALYSIS,
+        "market": QueryType.MARKET,
+        "general": QueryType.GENERAL,
+        "news": QueryType.NEWS
+    }
     
-    # Handle GENERAL queries (answered by LLM without data fetching)
-    if QueryType.GENERAL in classification.query_types and classification.llm_answer:
-        print("GENERAL query detected with pre-generated answer")
-        context = build_context(user_query)
-        context["timestamp"] = datetime.utcnow().isoformat()
+    query_type_enum = query_type_mapping.get(query_type_str, QueryType.GENERAL)
+    
+    # ========================================================================
+    # STEP 2: Handle GENERAL queries (already answered in Step 1)
+    # ========================================================================
+    if query_type_enum == QueryType.GENERAL and general_answer:
+        print("✅ General query - returning answer from LLM (no data fetching needed)")
         
         return QueryResponse(
-            answer=classification.llm_answer,
+            answer=general_answer,
             citations=[Citation(source="LLM Knowledge", url="")],
-            confidence=0.80,  # Medium-high for general conceptual answers
-            data_timestamp=context["timestamp"],
+            confidence=0.85,  # High for general conceptual answers
+            data_timestamp=datetime.utcnow().isoformat(),
             context={
                 "sources_used": ["general"],
-                "classification_confidence": classification.confidence,
+                "classification_confidence": confidence,
+                "query_type": query_type_str
+            }
+        )
+    
+    # ========================================================================
+    # STEP 2.5: Handle MARKET queries (multiple symbols)
+    # ========================================================================
+    if query_type_enum == QueryType.MARKET:
+        print("🌍 Market query detected")
+        
+        # Validate and limit symbols from LLM
+        if symbols_list:
+            validated_symbols = validate_symbols(symbols_list, max_symbols=20)
+            print(f"   LLM provided {len(symbols_list)} symbols")
+            print(f"   After validation: {len(validated_symbols)} symbols")
+        else:
+            # No symbols from LLM - use default backup
+            print("   ⚠️  No symbols from LLM - using default market overview")
+            validated_symbols = DEFAULT_MARKET_SYMBOLS
+        
+        if not validated_symbols:
+            # No symbols at all - can't proceed
+            print("   ❌ No valid symbols to fetch")
+            return QueryResponse(
+                answer="I couldn't determine which market data to fetch. Please be more specific.",
+                citations=[],
+                confidence=0.3,
+                data_timestamp=datetime.utcnow().isoformat(),
+                context={
+                    "sources_used": ["market"],
+                    "classification_confidence": confidence,
+                    "error": "No symbols to fetch"
+                }
+            )
+        
+        # Fetch all symbols in parallel
+        market_data = await fetch_multiple_symbols(validated_symbols)
+        
+        # Check if we got enough data
+        success_rate = len(market_data) / len(validated_symbols)
+        
+        if success_rate < 0.5:
+            # More than half failed - data unavailable
+            print(f"   ❌ Too many failures: {len(market_data)}/{len(validated_symbols)} succeeded")
+            return QueryResponse(
+                answer="I'm having trouble fetching market data right now. Most of the requested symbols are unavailable. Please try again later.",
+                citations=[Citation(source="Mboum API - Market Data", url="")],
+                confidence=0.2,
+                data_timestamp=datetime.utcnow().isoformat(),
+                context={
+                    "sources_used": ["market"],
+                    "classification_confidence": confidence,
+                    "symbols_requested": validated_symbols,
+                    "symbols_fetched": list(market_data.keys()),
+                    "success_rate": f"{success_rate:.1%}"
+                }
+            )
+        
+        # Categorize the data for better LLM presentation
+        categorized_data = categorize_market_data(market_data)
+        
+        # Build context for LLM
+        context = {
+            "query": user_query,
+            "query_type": "market",
+            "market_overview": categorized_data,
+            "symbols_fetched": list(market_data.keys()),
+            "total_symbols": len(validated_symbols),
+            "success_count": len(market_data),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        print(f"   📊 Market data ready:")
+        print(f"      Indices: {len(categorized_data['indices'])}")
+        print(f"      Stocks: {len(categorized_data['stocks'])}")
+        print(f"      Crypto: {len(categorized_data['crypto'])}")
+        print(f"      Commodities: {len(categorized_data['commodities'])}")
+        
+        # Generate comprehensive market overview
+        llm_answer = generate_answer(context, user_query)
+        validated_answer, answer_confidence = validate_response(llm_answer, context)
+        
+        return QueryResponse(
+            answer=validated_answer,
+            citations=[Citation(source="Mboum API - Market Data", url="")],
+            confidence=answer_confidence,
+            data_timestamp=context["timestamp"],
+            context={
+                "sources_used": ["market"],
+                "classification_confidence": confidence,
+                "symbols_requested": validated_symbols,
+                "symbols_fetched": list(market_data.keys()),
                 "data": context
             }
         )
     
-    # Step 2: Route to appropriate data sources based on classification
-    # If LLM extracted a ticker, inject it into the query for better context building
-    query_for_fetch = user_query
-    if classification.llm_ticker:
-        print(f"LLM extracted ticker: {classification.llm_ticker}")
-        query_for_fetch = f"{classification.llm_ticker} {user_query}"
+    # ========================================================================
+    # STEP 3: Entity Resolution (for data queries)
+    # ========================================================================
+    resolved_symbol = None
+    entity_metadata = None
     
-    context = await fetch_data_by_classification(query_for_fetch, classification.query_types)
+    if entity:
+        print(f"🔍 Resolving entity: '{entity}'")
+        entity_metadata = await resolve_entity_to_symbol(entity)
+        
+        if entity_metadata:
+            resolved_symbol = entity_metadata['symbol']
+            print(f"✅ Resolved: '{entity}' → '{resolved_symbol}'")
+            print(f"   Name: {entity_metadata.get('name', 'N/A')}")
+            print(f"   Type: {entity_metadata.get('type', 'N/A')}")
+            print(f"   Exchange: {entity_metadata.get('exchange', 'N/A')}")
+        else:
+            print(f"⚠️  Could not resolve entity: '{entity}'")
+    else:
+        print("ℹ️  No entity to resolve (market query or general)")
     
-    print(f"Sample Context: {context}")
+    # ========================================================================
+    # STEP 4: Data Fetching
+    # ========================================================================
+    context = await fetch_data_by_classification(
+        resolved_symbol if resolved_symbol else user_query,
+        [query_type_enum]
+    )
     
-    # Step 3: Generate answer using LLM
+    # Add entity metadata to context for LLM
+    if entity_metadata:
+        context['resolved_entity'] = entity_metadata
+        context['ticker'] = resolved_symbol
+    
+    print(f"📊 Data fetched: {list(context.keys())}")
+    
+    # ========================================================================
+    # STEP 5: Check if we got data (error handling)
+    # ========================================================================
+    has_data = (
+        context.get("price") is not None or 
+        context.get("historical_data") is not None or
+        context.get("fundamentals_data") is not None or
+        context.get("market_data") is not None
+    )
+    
+    if not has_data and entity:
+        # No data found - let LLM explain the issue
+        print("⚠️  No data found for entity")
+        context['error'] = f"Could not find data for '{entity}'"
+        if not entity_metadata:
+            context['error'] = f"Could not find symbol '{entity}'. Please check the ticker or company name."
+    
+    # ========================================================================
+    # STEP 6: Generate Answer using LLM
+    # ========================================================================
     llm_answer = generate_answer(context, user_query)
     
-    # Step 4: Validate response against context
-    validated_answer, confidence = validate_response(llm_answer, context)
+    # ========================================================================
+    # STEP 7: Validate Response
+    # ========================================================================
+    validated_answer, answer_confidence = validate_response(llm_answer, context)
     
-    # Step 5: Build response
+    # ========================================================================
+    # STEP 8: Build and Return Response
+    # ========================================================================
     response = QueryResponse(
         answer=validated_answer,
         citations=extract_citations(context),
-        confidence=confidence,
+        confidence=answer_confidence,
         data_timestamp=context.get("timestamp", datetime.utcnow().isoformat()),
         context={
-            "sources_used": [qt.value for qt in classification.query_types],
-            "classification_confidence": classification.confidence,
+            "sources_used": [query_type_enum.value],
+            "classification_confidence": confidence,
+            "entity": entity,
+            "resolved_symbol": resolved_symbol,
             "data": context
         }
     )
-    
-    # Step 6: Post-Failure LLM Rescue (Option A)
-    # If we got "insufficient data", try one more time with LLM-extracted company name
-    if "insufficient data" in response.answer.lower() and confidence < 0.5:
-        print("Insufficient data detected - attempting LLM rescue")
-        
-        # Use LLM to extract company/asset name
-        llm_company_name = await llm_extract_company_name(user_query)
-        
-        if llm_company_name:
-            print(f"   LLM extracted company name: '{llm_company_name}'")
-            
-            # Try to resolve ticker via Mboum search
-            rescue_ticker = await resolve_ticker(llm_company_name)
-            
-            if rescue_ticker:
-                print(f"   Resolved to ticker: {rescue_ticker}")
-                
-                # Rebuild the query with the correct ticker
-                rescue_query = f"{rescue_ticker} {user_query}"
-                
-                # Re-fetch data with the correct ticker
-                rescue_context = await fetch_data_by_classification(
-                    rescue_query,
-                    classification.query_types
-                )
-                
-                # Check if we actually got data this time
-                if rescue_context.get("price") or rescue_context.get("historical_data"):
-                    print("   Rescue successful! Re-generating answer with new data")
-                    
-                    # Re-generate answer with new context
-                    rescue_answer = generate_answer(rescue_context, user_query)
-                    rescue_validated, rescue_confidence = validate_response(
-                        rescue_answer, rescue_context
-                    )
-                    
-                    # Build new response with rescued data
-                    response = QueryResponse(
-                        answer=rescue_validated,
-                        citations=extract_citations(rescue_context),
-                        confidence=rescue_confidence,
-                        data_timestamp=rescue_context.get(
-                            "timestamp", datetime.utcnow().isoformat()
-                        ),
-                        context={
-                            "sources_used": [qt.value for qt in classification.query_types],
-                            "classification_confidence": classification.confidence,
-                            "data": rescue_context,
-                            "rescue_applied": True,
-                            "llm_extracted_name": llm_company_name
-                        }
-                    )
-                    print(f"   Final rescue confidence: {rescue_confidence:.2f}")
-                else:
-                    print("   Rescue failed - still no data available")
-            else:
-                print("   Could not resolve company name to ticker")
-        else:
-            print("   LLM could not extract company name")
     
     return response
 
 
 async def fetch_data_by_classification(
-    user_query: str,
+    symbol_or_query: str,
     query_types: List[QueryType]
 ) -> Dict:
     """
     Fetch data from appropriate sources based on query classification.
+    
+    Args:
+        symbol_or_query: Either a resolved symbol (e.g., "BTC-USD", "AAPL") 
+                        or the original query if no symbol was resolved
+        query_types: List of QueryType enums indicating what data to fetch
     
     Maps query types to data sources:
     - PRICE → Mboum API (real-time quote for stocks)
@@ -235,11 +372,19 @@ async def fetch_data_by_classification(
     - MARKET → Mboum API (same endpoint, handles indexes like ^GSPC)
     - ANALYSIS → Multiple sources (price + fundamentals + historical)
     """
-    print(f"Fetching data for query types: {[qt.value for qt in query_types]}")
+    print(f"📡 Fetching data for query types: {[qt.value for qt in query_types]}")
 
-    # Start with base context (ticker + raw query)
-    context = build_context(user_query)
-    ticker = context.get("ticker")
+    # Determine if we have a symbol or need to extract one
+    # If symbol_or_query looks like a ticker (short, uppercase, with possible -, ., ^)
+    # use it directly, otherwise try to extract from query
+    ticker = symbol_or_query
+    if ' ' in symbol_or_query:
+        # It's a query, not a symbol - try to extract ticker
+        context = build_context(symbol_or_query)
+        ticker = context.get("ticker")
+    else:
+        # It's likely a resolved symbol - use it directly
+        context = {"ticker": ticker, "query": symbol_or_query}
 
     # Track which external sources were queried for citation building
     context["sources_queried"] = []
@@ -382,13 +527,10 @@ def extract_citations(context: Dict) -> List[Citation]:
 def classify_query(user_query: str) -> str:
     """
     DEPRECATED: Old classification function.
-    Use query_classifier.py instead.
+    Now uses LLM-based classification instead of rule-based.
     
     Kept for backward compatibility.
     """
-    classifier = get_classifier()
-    result = classifier.classify(user_query)
-    
-    if result.query_types:
-        return result.query_types[0].value
-    return 'general'
+    # Use new LLM-based classification (returns 5 values now)
+    query_type_str, _, _, _, _ = llm_classify_query(user_query)
+    return query_type_str
