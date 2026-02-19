@@ -39,6 +39,7 @@ class FMPFetcher(BaseFetcher):
         - mode="historical"   → historical prices
         - mode="fundamentals" → income statement
         - mode="market"       → simple market snapshot
+        - mode="price_change" → price change summary (1D, 5D, 1M, 3M, 6M, YTD, 1Y, etc.)
         """
         mode = kwargs.pop("mode", "historical")
 
@@ -47,6 +48,8 @@ class FMPFetcher(BaseFetcher):
         elif mode == "market":
             # For market-level data, the ticker argument is optional.
             return await self._fetch_market(ticker=ticker, **kwargs)
+        elif mode == "price_change":
+            return await self._fetch_price_change(ticker, **kwargs)
         else:
             # Default: historical
             return await self._fetch_historical(ticker, **kwargs)
@@ -55,6 +58,8 @@ class FMPFetcher(BaseFetcher):
         self,
         ticker: str,
         timeseries: int = 30,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -63,6 +68,12 @@ class FMPFetcher(BaseFetcher):
         Args:
             ticker: Stock ticker symbol
             timeseries: Number of data points to return (FMP `timeseries` param)
+            from_date: Start date in YYYY-MM-DD format (optional)
+            to_date: End date in YYYY-MM-DD format (optional)
+            
+        Note:
+            If both from_date and to_date are provided, they take precedence over timeseries.
+            If neither is provided, defaults to timeseries (last N days).
         """
         api_key: Optional[str] = settings.fmp_api_key
         ticker_upper = ticker.upper()
@@ -78,8 +89,14 @@ class FMPFetcher(BaseFetcher):
         url = f"{self.BASE_URL}/historical-price-full/{ticker_upper}"
         params = {
             "apikey": api_key,
-            "timeseries": timeseries,
         }
+        
+        # Use date range if provided, otherwise use timeseries
+        if from_date and to_date:
+            params["from"] = from_date
+            params["to"] = to_date
+        else:
+            params["timeseries"] = timeseries
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -260,6 +277,75 @@ class FMPFetcher(BaseFetcher):
         except Exception as e:
             return {
                 "ticker": symbol,
+                "status": "error",
+                "error": type(e).__name__,
+                "message": str(e),
+            }
+
+    async def _fetch_price_change(
+        self,
+        ticker: str,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Fetch price change summary for a ticker across multiple timeframes.
+        
+        Returns performance metrics for 1D, 5D, 1M, 3M, 6M, YTD, 1Y, 3Y, 5Y, 10Y.
+        
+        Args:
+            ticker: Stock ticker symbol
+            
+        Docs: https://financialmodelingprep.com/api/v3/stock-price-change/AAPL
+        """
+        api_key: Optional[str] = settings.fmp_api_key
+        ticker_upper = ticker.upper()
+
+        if not api_key:
+            return {
+                "ticker": ticker_upper,
+                "status": "error",
+                "error": "MissingApiKey",
+                "message": "FMP API key is not configured",
+            }
+
+        url = f"{self.BASE_URL}/stock-price-change/{ticker_upper}"
+        params = {
+            "apikey": api_key,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(url, params=params)
+
+            if resp.status_code != 200:
+                return {
+                    "ticker": ticker_upper,
+                    "status": "error",
+                    "error": f"HTTP_{resp.status_code}",
+                    "message": f"FMP price change request failed with status {resp.status_code}",
+                }
+
+            data = resp.json()
+            # API returns a list with one item
+            price_change = data[0] if isinstance(data, list) and data else data
+
+            return {
+                "ticker": price_change.get("symbol", ticker_upper) if isinstance(price_change, dict) else ticker_upper,
+                "status": "success",
+                "source": "FMP Price Change API",
+                "timestamp": datetime.utcnow().isoformat(),
+                "price_change": price_change,
+            }
+        except httpx.RequestError as e:
+            return {
+                "ticker": ticker_upper,
+                "status": "error",
+                "error": "RequestError",
+                "message": str(e),
+            }
+        except Exception as e:
+            return {
+                "ticker": ticker_upper,
                 "status": "error",
                 "error": type(e).__name__,
                 "message": str(e),

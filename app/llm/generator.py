@@ -14,11 +14,32 @@ def generate_answer(context: dict, user_query: str) -> str:
     Returns:
         Generated answer text
     """
-    # Create prompt with strict instructions
+    # Create prompt with enhanced instructions for engaging responses
     prompt = f"""
-You are RichTVBot, a financial assistant. Only use the following financial data. 
-Do not invent numbers. Answer the user's question based only on this data.
-If the data is insufficient, respond with "I have insufficient data to answer this question."
+You are RichTVBot, a knowledgeable financial assistant. Answer the user's question using ONLY the provided data.
+
+CRITICAL RULES:
+1. NEVER invent, estimate, or fabricate numbers
+2. Use ONLY the exact data provided below
+3. If data is insufficient, say "I don't have enough data to answer that"
+4. DO NOT repeat the same information multiple times in your response
+
+RESPONSE STYLE:
+- Start with a clear summary/overview statement
+- Provide context and narrative, not just raw numbers
+- Group related information logically
+- Highlight notable trends or outliers
+- Use natural, engaging language while staying professional
+- For market overviews: organize by sector/category, identify top movers
+- For price queries: include relevant context like day's range, volume if available
+- For comparisons: highlight key differences and similarities
+- Add timestamp context when relevant (e.g., "as of today", "current prices")
+
+FORMATTING:
+- Use clear, readable structure
+- Bold key stock symbols for emphasis (e.g., **NVDA**)
+- Use bullet points or natural paragraphs as appropriate
+- Include percentage changes in context, not just isolated numbers
 
 Data: {json.dumps(context, indent=2)}
 
@@ -26,9 +47,9 @@ User Question: {user_query}
 
 Answer:"""
     
-    # Use LLM client
+    # Use LLM client with slightly higher temperature for more natural language
     llm = get_llm_client()
-    response = llm.generate(prompt, temperature=0.3)
+    response = llm.generate(prompt, temperature=0.4)
     
     if response:
         return response
@@ -192,12 +213,14 @@ Answer (company/asset name only):"""
     return None
 
 
-def llm_classify_query(user_query: str) -> Tuple[str, str, Optional[str], Optional[str], Optional[List[str]]]:
+def llm_classify_query(user_query: str) -> Tuple[str, str, Optional[List[str]], Optional[str], Optional[List[str]], Optional[dict]]:
     """
-    Use LLM to classify query intent and extract entity/symbols.
+    Use LLM to classify query intent and extract entities/symbols/dates.
     
     OPTIMIZED: Answers general queries immediately in one call!
     SMART: For market queries, LLM determines which symbols to fetch!
+    MULTI-ENTITY: Supports comparison queries with multiple companies!
+    DATE-AWARE: Extracts date ranges for historical queries!
     
     This replaces the rule-based classification system with a more flexible
     LLM-based approach that understands informal language and context.
@@ -206,12 +229,13 @@ def llm_classify_query(user_query: str) -> Tuple[str, str, Optional[str], Option
         user_query: User's question
         
     Returns:
-        Tuple of (query_type, confidence, entity, answer, symbols_list):
+        Tuple of (query_type, confidence, entities_list, answer, symbols_list, date_range):
         - query_type: "price", "historical", "fundamentals", "analysis", "market", or "general"
         - confidence: "high", "medium", or "low"
-        - entity: Extracted entity (company name, ticker, asset) or None
+        - entities_list: List of entities (company names, tickers) or None
         - answer: Complete answer if general query, None if needs data fetching
         - symbols_list: List of symbols to fetch (only for MARKET queries)
+        - date_range: Dict with "from" and "to" keys in YYYY-MM-DD format, or None
     """
     prompt = f"""
 You are a financial query classifier and data planner.
@@ -220,19 +244,22 @@ IMPORTANT:
 1. If the query is a GENERAL conceptual question, provide a complete answer immediately.
 2. If the query is a MARKET overview request, provide a LIST of symbols to fetch.
 3. For other data queries, just extract the entity.
+4. For HISTORICAL queries with date ranges, extract dates in YYYY-MM-DD format.
 
 Query Types:
 1. PRICE - Single asset price
-   → Extract entity, NO answer
+   → Extract entity, NO answer, NO dates
    
 2. HISTORICAL - Single asset history
    → Extract entity, NO answer
+   → If specific date range mentioned, extract FROM and TO dates
+   → Convert dates to YYYY-MM-DD format (e.g., "1 Jan 2020" → "2020-01-01")
    
 3. FUNDAMENTALS - Single asset financials
-   → Extract entity, NO answer
+   → Extract entity, NO answer, NO dates
    
 4. ANALYSIS - Single asset analysis
-   → Extract entity, NO answer
+   → Extract entity, NO answer, NO dates
    
 5. MARKET - Market overview (REQUIRES MULTIPLE SYMBOLS!)
    → Provide symbol list based on context
@@ -245,31 +272,52 @@ Query Types:
 MARKET Query Guidelines:
 - General market: Include indices (^GSPC, ^DJI, ^IXIC), top stocks (AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA), crypto (BTC-USD, ETH-USD), commodities (GC=F, CL=F)
 - Tech focus: Nasdaq (^IXIC), tech giants (AAPL, MSFT, NVDA, GOOGL, META, AMZN, TSLA)
+- AI stocks focus: Nasdaq (^IXIC), AI leaders (NVDA, MSFT, GOOGL, META, AAPL, AMD, TSLA, AMZN, SMCI, PLTR)
 - Crypto focus: Major cryptos (BTC-USD, ETH-USD, SOL-USD, BNB-USD, XRP-USD, ADA-USD)
 - Commodities focus: Gold (GC=F), Silver (SI=F), Oil (CL=F), Natural Gas (NG=F)
 - MAX 20 symbols total
+- Include ONE relevant index for context, avoid duplicating it in response
 
 Response Format:
 
 For MARKET queries:
 TYPE: market
 CONFIDENCE: [high/medium/low]
-ENTITY: NONE
+ENTITIES: NONE
 SYMBOLS: ^GSPC, ^DJI, ^IXIC, AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA, BTC-USD, ETH-USD, GC=F, CL=F
+DATE_RANGE: NONE
 ANSWER: NONE
 
-For PRICE/HISTORICAL/FUNDAMENTALS/ANALYSIS queries:
-TYPE: [price/historical/fundamentals/analysis]
+For HISTORICAL queries WITH date range:
+TYPE: historical
 CONFIDENCE: [high/medium/low]
-ENTITY: [company/ticker name]
+ENTITIES: [company/ticker]
 SYMBOLS: NONE
+DATE_RANGE: from=YYYY-MM-DD, to=YYYY-MM-DD
+ANSWER: NONE
+
+For HISTORICAL queries WITHOUT specific date range:
+TYPE: historical
+CONFIDENCE: [high/medium/low]
+ENTITIES: [company/ticker]
+SYMBOLS: NONE
+DATE_RANGE: NONE
+ANSWER: NONE
+
+For PRICE/FUNDAMENTALS/ANALYSIS queries:
+TYPE: [price/fundamentals/analysis]
+CONFIDENCE: [high/medium/low]
+ENTITIES: [comma-separated list of companies/tickers, e.g., "Apple, NVIDIA" for comparisons]
+SYMBOLS: NONE
+DATE_RANGE: NONE
 ANSWER: NONE
 
 For GENERAL queries:
 TYPE: general
 CONFIDENCE: [high/medium/low]
-ENTITY: NONE
+ENTITIES: NONE
 SYMBOLS: NONE
+DATE_RANGE: NONE
 ANSWER: [complete answer]
 
 Examples:
@@ -277,36 +325,57 @@ Examples:
 Query: "Give me market update"
 TYPE: market
 CONFIDENCE: high
-ENTITY: NONE
+ENTITIES: NONE
 SYMBOLS: ^GSPC, ^DJI, ^IXIC, AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA, BTC-USD, ETH-USD, GC=F, CL=F
+DATE_RANGE: NONE
 ANSWER: NONE
 
 Query: "How's tech doing?"
 TYPE: market
 CONFIDENCE: high
-ENTITY: NONE
+ENTITIES: NONE
 SYMBOLS: ^IXIC, AAPL, MSFT, NVDA, GOOGL, AMZN, TSLA, META
+DATE_RANGE: NONE
 ANSWER: NONE
 
-Query: "Crypto market update"
+Query: "What's happening with AI stocks?"
 TYPE: market
 CONFIDENCE: high
-ENTITY: NONE
-SYMBOLS: BTC-USD, ETH-USD, SOL-USD, BNB-USD, XRP-USD, ADA-USD
+ENTITIES: NONE
+SYMBOLS: ^IXIC, NVDA, MSFT, GOOGL, META, AAPL, AMD, TSLA, AMZN, SMCI, PLTR
+DATE_RANGE: NONE
 ANSWER: NONE
 
 Query: "What's Apple price?"
 TYPE: price
 CONFIDENCE: high
-ENTITY: Apple
+ENTITIES: Apple
 SYMBOLS: NONE
+DATE_RANGE: NONE
+ANSWER: NONE
+
+Query: "Show Apple performance from 1 Jan 2020 to 15 March 2020"
+TYPE: historical
+CONFIDENCE: high
+ENTITIES: Apple
+SYMBOLS: NONE
+DATE_RANGE: from=2020-01-01, to=2020-03-15
+ANSWER: NONE
+
+Query: "Compare Apple and NVIDIA performance last month"
+TYPE: historical
+CONFIDENCE: high
+ENTITIES: Apple, NVIDIA
+SYMBOLS: NONE
+DATE_RANGE: NONE
 ANSWER: NONE
 
 Query: "What is a dividend?"
 TYPE: general
 CONFIDENCE: high
-ENTITY: NONE
+ENTITIES: NONE
 SYMBOLS: NONE
+DATE_RANGE: NONE
 ANSWER: A dividend is a payment made by a corporation to its shareholders, usually as a distribution of profits. Companies pay dividends on a per-share basis, typically quarterly.
 
 User Query: "{user_query}"
@@ -317,14 +386,15 @@ Your Response:"""
     response = llm.generate(prompt, temperature=0.3)
     
     if not response:
-        return ("general", "low", None, None, None)
+        return ("general", "low", None, None, None, None)
     
     # Parse the response
     query_type = "general"
     confidence = "low"
-    entity = None
+    entities_list = None
     answer = None
     symbols_list = None
+    date_range = None
     
     for line in response.split('\n'):
         line = line.strip()
@@ -332,15 +402,26 @@ Your Response:"""
             query_type = line.replace("TYPE:", "").strip().lower()
         elif line.startswith("CONFIDENCE:"):
             confidence = line.replace("CONFIDENCE:", "").strip().lower()
-        elif line.startswith("ENTITY:"):
-            entity_val = line.replace("ENTITY:", "").strip()
-            if entity_val and entity_val.upper() != "NONE":
-                entity = entity_val
+        elif line.startswith("ENTITIES:"):
+            entities_val = line.replace("ENTITIES:", "").strip()
+            if entities_val and entities_val.upper() != "NONE":
+                # Parse comma-separated entities
+                entities_list = [e.strip() for e in entities_val.split(",") if e.strip()]
         elif line.startswith("SYMBOLS:"):
             symbols_val = line.replace("SYMBOLS:", "").strip()
             if symbols_val and symbols_val.upper() != "NONE":
                 # Parse comma-separated symbols
                 symbols_list = [s.strip() for s in symbols_val.split(",") if s.strip()]
+        elif line.startswith("DATE_RANGE:"):
+            date_val = line.replace("DATE_RANGE:", "").strip()
+            if date_val and date_val.upper() != "NONE":
+                # Parse date range: "from=2020-01-01, to=2020-03-15"
+                date_range = {}
+                for part in date_val.split(","):
+                    part = part.strip()
+                    if "=" in part:
+                        key, val = part.split("=", 1)
+                        date_range[key.strip()] = val.strip()
         elif line.startswith("ANSWER:"):
             answer_val = line.replace("ANSWER:", "").strip()
             if answer_val and answer_val.upper() != "NONE":
@@ -351,5 +432,5 @@ Your Response:"""
                     answer = None
                 break
     
-    return (query_type, confidence, entity, answer, symbols_list)
+    return (query_type, confidence, entities_list, answer, symbols_list, date_range)
 

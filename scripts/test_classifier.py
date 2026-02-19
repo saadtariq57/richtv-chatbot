@@ -95,9 +95,9 @@ def classify_and_display(query: str):
     """Classify a query using LLM and display results."""
     import time
     
-    # Call LLM classifier (now returns 5 values)
+    # Call LLM classifier (now returns 5 values, entity is now a list)
     start_time = time.time()
-    query_type, confidence, entity, answer, symbols = llm_classify_query(query)
+    query_type, confidence, entities, answer, symbols, date_range = llm_classify_query(query)
     elapsed_time = time.time() - start_time
     
     # Color coding for confidence
@@ -119,7 +119,7 @@ def classify_and_display(query: str):
     # Confidence
     print(f"\n{confidence_icon} Confidence: {confidence.upper()}")
     
-    # Extracted entity or symbols
+    # Extracted entities or symbols
     if symbols:
         print(f"\n📊 Symbols to Fetch (Market Query):")
         print(f"  • Count: {len(symbols)}")
@@ -127,13 +127,16 @@ def classify_and_display(query: str):
         if len(symbols) > 10:
             print(f"  • ... and {len(symbols) - 10} more")
         print(f"  ℹ️  Note: Will fetch all in parallel via Mboum API")
-    elif entity:
-        print(f"\n🎯 Extracted Entity:")
-        print(f"  • {entity}")
-        print(f"  ℹ️  Note: Will be resolved via Mboum Search API")
+    elif entities:
+        print(f"\n🎯 Extracted Entities:")
+        if len(entities) > 1:
+            print(f"  • Count: {len(entities)} (Comparison Mode!)")
+        for entity in entities:
+            print(f"  • {entity}")
+        print(f"  ℹ️  Note: Each will be resolved via Mboum Search API")
         print(f"     (e.g., 'BTC' → 'BTC-USD', 'Apple' → 'AAPL')")
     else:
-        print(f"\n🎯 No entity/symbols extracted (general query)")
+        print(f"\n🎯 No entities/symbols extracted (general query)")
     
     # If general query, show the answer
     if answer:

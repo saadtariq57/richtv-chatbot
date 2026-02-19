@@ -92,15 +92,18 @@ def test_queries():
         
         try:
             start = time.time()
-            query_type, confidence, entity, answer, symbols = llm_classify_query(query)
+            query_type, confidence, entities, answer, symbols, date_range = llm_classify_query(query)
             elapsed = time.time() - start
             total_time += elapsed
             
             # Determine what was extracted
             if symbols:
                 extracted = f"{len(symbols)} syms"
-            elif entity:
-                extracted = entity[:10]
+            elif entities:
+                if len(entities) > 1:
+                    extracted = f"{len(entities)} ents"
+                else:
+                    extracted = entities[0][:10]
             else:
                 extracted = 'N/A'
             

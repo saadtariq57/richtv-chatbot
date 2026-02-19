@@ -19,12 +19,12 @@ class BaseFetcher(ABC):
     Subclasses must implement the fetch() method.
     """
     
-    def __init__(self, timeout: int = 3):
+    def __init__(self, timeout: int = 30):
         """
         Initialize fetcher.
         
         Args:
-            timeout: Request timeout in seconds
+            timeout: Request timeout in seconds (default: 30)
         """
         self.timeout = timeout
     
@@ -64,12 +64,14 @@ class BaseFetcher(ABC):
             return result
         except asyncio.TimeoutError:
             return {
+                "status": "error",
                 "error": "Timeout",
                 "message": f"Fetch timed out after {self.timeout}s",
                 "ticker": ticker
             }
         except Exception as e:
             return {
+                "status": "error",
                 "error": type(e).__name__,
                 "message": str(e),
                 "ticker": ticker

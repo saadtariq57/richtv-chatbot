@@ -6,7 +6,7 @@ backed by real Mboum & FMP API integrations.
 """
 
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 import asyncio
 
 from app.api.schemas import QueryResponse, Citation
@@ -30,9 +30,10 @@ from app.utils.ticker_resolver import (
 
 async def fetch_multiple_symbols(symbols: List[str]) -> Dict[str, Dict]:
     """
-    Fetch price data for multiple symbols in parallel.
+    Fetch price data for multiple symbols using batch API call.
     
     Used for market overview queries where we need data for many symbols at once.
+    Uses Mboum's batch fetch capability (comma-separated tickers) for efficiency.
     
     Args:
         symbols: List of ticker symbols to fetch
@@ -44,29 +45,26 @@ async def fetch_multiple_symbols(symbols: List[str]) -> Dict[str, Dict]:
     if not symbols:
         return {}
     
-    print(f"📊 Fetching data for {len(symbols)} symbols in parallel...")
+    print(f"📊 Fetching data for {len(symbols)} symbols in batch...")
     
     price_fetcher = PriceFetcher()
     
-    # Create fetch tasks for all symbols
-    tasks = [price_fetcher.fetch_with_timeout(symbol) for symbol in symbols]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Use batch fetch - single API call for all symbols
+    results = await price_fetcher.fetch_batch(symbols)
     
     # Process results
     data = {}
     success_count = 0
     
-    for symbol, result in zip(symbols, results):
-        if isinstance(result, Exception):
-            print(f"   ⚠️  {symbol}: Failed ({str(result)[:50]})")
-            continue
-        
+    for symbol, result in results.items():
         if isinstance(result, dict) and result.get("status") == "success":
             data[symbol] = result
             success_count += 1
             print(f"   ✅ {symbol}: ${result.get('price', 'N/A')}")
         else:
-            print(f"   ⚠️  {symbol}: No data")
+            # Show error details if available
+            error_msg = result.get("error", "No data") if isinstance(result, dict) else "No data"
+            print(f"   ⚠️  {symbol}: {error_msg}")
     
     print(f"📊 Successfully fetched {success_count}/{len(symbols)} symbols")
     
@@ -137,13 +135,14 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
     # 3. For MARKET queries, determine which symbols to fetch
     # ========================================================================
     
-    query_type_str, confidence, entity, general_answer, symbols_list = llm_classify_query(user_query)
+    query_type_str, confidence, entities_list, general_answer, symbols_list, date_range = llm_classify_query(user_query)
     
     print(f"✨ LLM Classification:")
     print(f"   Type: {query_type_str}")
     print(f"   Confidence: {confidence}")
-    print(f"   Entity: {entity if entity else 'None'}")
+    print(f"   Entities: {entities_list if entities_list else 'None'}")
     print(f"   Symbols: {symbols_list if symbols_list else 'None'}")
+    print(f"   Date Range: {date_range if date_range else 'None'}")
     print(f"   General Answer: {'Provided' if general_answer else 'None (needs data)'}")
     
     # Map string query type to QueryType enum
@@ -270,57 +269,95 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
         )
     
     # ========================================================================
-    # STEP 3: Entity Resolution (for data queries)
+    # STEP 3: Entity Resolution (for data queries - supports multiple entities)
     # ========================================================================
-    resolved_symbol = None
-    entity_metadata = None
+    resolved_symbols = []
+    entities_metadata = []
     
-    if entity:
-        print(f"🔍 Resolving entity: '{entity}'")
-        entity_metadata = await resolve_entity_to_symbol(entity)
+    if entities_list:
+        print(f"🔍 Resolving {len(entities_list)} entity/entities: {entities_list}")
         
-        if entity_metadata:
-            resolved_symbol = entity_metadata['symbol']
-            print(f"✅ Resolved: '{entity}' → '{resolved_symbol}'")
-            print(f"   Name: {entity_metadata.get('name', 'N/A')}")
-            print(f"   Type: {entity_metadata.get('type', 'N/A')}")
-            print(f"   Exchange: {entity_metadata.get('exchange', 'N/A')}")
+        for entity in entities_list:
+            print(f"   Resolving: '{entity}'")
+            entity_metadata = await resolve_entity_to_symbol(entity)
+            
+            if entity_metadata:
+                resolved_symbol = entity_metadata['symbol']
+                resolved_symbols.append(resolved_symbol)
+                entities_metadata.append(entity_metadata)
+                print(f"   ✅ '{entity}' → '{resolved_symbol}' ({entity_metadata.get('name', 'N/A')})")
+            else:
+                print(f"   ⚠️  Could not resolve: '{entity}'")
+        
+        if resolved_symbols:
+            print(f"✅ Total resolved: {len(resolved_symbols)} symbols: {resolved_symbols}")
         else:
-            print(f"⚠️  Could not resolve entity: '{entity}'")
+            print(f"❌ No entities could be resolved")
     else:
-        print("ℹ️  No entity to resolve (market query or general)")
+        print("ℹ️  No entities to resolve (market query or general)")
     
     # ========================================================================
-    # STEP 4: Data Fetching
+    # STEP 4: Data Fetching (works for single or multiple entities)
     # ========================================================================
-    context = await fetch_data_by_classification(
-        resolved_symbol if resolved_symbol else user_query,
-        [query_type_enum]
-    )
+    # Simple approach: Fetch data for all entities, put in clean structure
+    # LLM reads the query and figures out what to do (compare, analyze, etc.)
     
-    # Add entity metadata to context for LLM
-    if entity_metadata:
-        context['resolved_entity'] = entity_metadata
-        context['ticker'] = resolved_symbol
-    
-    print(f"📊 Data fetched: {list(context.keys())}")
+    if resolved_symbols:
+        # We have entities - fetch data for each
+        print(f"📊 Fetching data for {len(resolved_symbols)} entity/entities")
+        
+        entities_data = {}
+        for idx, symbol in enumerate(resolved_symbols):
+            print(f"   Fetching data for {symbol}...")
+            entity_data = await fetch_data_by_classification(symbol, [query_type_enum], date_range)
+            
+            # Label with entity name for clarity
+            entity_name = entities_list[idx] if idx < len(entities_list) else symbol
+            entities_data[entity_name] = {
+                "symbol": symbol,
+                "data": entity_data,
+                "metadata": entities_metadata[idx] if idx < len(entities_metadata) else None
+            }
+        
+        # Build clean context with all entity data
+        context = {
+            "query": user_query,
+            "entities": entities_data,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        print(f"✅ Fetched data for {len(entities_data)} entity/entities")
+        
+    else:
+        # No entities (general or market query)
+        context = await fetch_data_by_classification(user_query, [query_type_enum], date_range)
+        print(f"📊 Data fetched: {list(context.keys())}")
     
     # ========================================================================
     # STEP 5: Check if we got data (error handling)
     # ========================================================================
-    has_data = (
-        context.get("price") is not None or 
-        context.get("historical_data") is not None or
-        context.get("fundamentals_data") is not None or
-        context.get("market_data") is not None
-    )
+    if context.get("entities"):
+        # Check if we got data for any entity
+        has_data = any(
+            entity_info["data"].get("price") or 
+            entity_info["data"].get("historical_data") or 
+            entity_info["data"].get("fundamentals_data")
+            for entity_info in context["entities"].values()
+        )
+    else:
+        # No entities structure (market/general query)
+        has_data = (
+            context.get("price") is not None or 
+            context.get("historical_data") is not None or
+            context.get("fundamentals_data") is not None or
+            context.get("market_data") is not None
+        )
     
-    if not has_data and entity:
+    if not has_data and entities_list:
         # No data found - let LLM explain the issue
-        print("⚠️  No data found for entity")
-        context['error'] = f"Could not find data for '{entity}'"
-        if not entity_metadata:
-            context['error'] = f"Could not find symbol '{entity}'. Please check the ticker or company name."
+        print("⚠️  No data found for entities")
+        context['error'] = f"Could not find data for '{', '.join(entities_list)}'"
+        if not entities_metadata:
+            context['error'] = f"Could not find symbols for '{', '.join(entities_list)}'. Please check the tickers or company names."
     
     # ========================================================================
     # STEP 6: Generate Answer using LLM
@@ -343,8 +380,8 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
         context={
             "sources_used": [query_type_enum.value],
             "classification_confidence": confidence,
-            "entity": entity,
-            "resolved_symbol": resolved_symbol,
+            "entities": entities_list,
+            "resolved_symbols": resolved_symbols,
             "data": context
         }
     )
@@ -354,7 +391,8 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
 
 async def fetch_data_by_classification(
     symbol_or_query: str,
-    query_types: List[QueryType]
+    query_types: List[QueryType],
+    date_range: Optional[dict] = None
 ) -> Dict:
     """
     Fetch data from appropriate sources based on query classification.
@@ -363,6 +401,7 @@ async def fetch_data_by_classification(
         symbol_or_query: Either a resolved symbol (e.g., "BTC-USD", "AAPL") 
                         or the original query if no symbol was resolved
         query_types: List of QueryType enums indicating what data to fetch
+        date_range: Optional dict with 'from' and 'to' keys for date-based queries
     
     Maps query types to data sources:
     - PRICE → Mboum API (real-time quote for stocks)
@@ -373,6 +412,8 @@ async def fetch_data_by_classification(
     - ANALYSIS → Multiple sources (price + fundamentals + historical)
     """
     print(f"📡 Fetching data for query types: {[qt.value for qt in query_types]}")
+    if date_range:
+        print(f"📅 Date range: {date_range.get('from')} to {date_range.get('to')}")
 
     # Determine if we have a symbol or need to extract one
     # If symbol_or_query looks like a ticker (short, uppercase, with possible -, ., ^)
@@ -398,17 +439,32 @@ async def fetch_data_by_classification(
     def _has_ticker() -> bool:
         return bool(ticker) and ticker != "UNKNOWN"
 
-    # PRICE → Mboum
+    # PRICE → Mboum + FMP price-change (for context)
     if QueryType.PRICE in query_types and _has_ticker():
         tasks.append(price_fetcher.fetch_with_timeout(ticker))
         labels.append("price")
         context["sources_queried"].append("Mboum API - real-time quote")
+        
+        # Also fetch price change summary for richer context
+        tasks.append(fmp_fetcher.fetch_with_timeout(ticker, mode="price_change"))
+        labels.append("price_change")
+        context["sources_queried"].append("FMP Price Change API")
 
-    # HISTORICAL → FMP historical-price-full
+    # HISTORICAL → FMP historical-price-full + price-change (for comparisons)
     if QueryType.HISTORICAL in query_types and _has_ticker():
-        tasks.append(fmp_fetcher.fetch_with_timeout(ticker, mode="historical"))
+        # Pass date range if available
+        fetch_kwargs = {"mode": "historical"}
+        if date_range:
+            fetch_kwargs["from_date"] = date_range.get("from")
+            fetch_kwargs["to_date"] = date_range.get("to")
+        tasks.append(fmp_fetcher.fetch_with_timeout(ticker, **fetch_kwargs))
         labels.append("historical")
         context["sources_queried"].append("FMP Historical API")
+        
+        # Also fetch price change summary for comparisons and context
+        tasks.append(fmp_fetcher.fetch_with_timeout(ticker, mode="price_change"))
+        labels.append("price_change")
+        context["sources_queried"].append("FMP Price Change API")
 
     # FUNDAMENTALS → FMP income-statement
     if QueryType.FUNDAMENTALS in query_types and _has_ticker():
@@ -431,13 +487,22 @@ async def fetch_data_by_classification(
             labels.append("price")
             context["sources_queried"].append("Mboum API - real-time quote")
         if "historical" not in labels:
-            tasks.append(fmp_fetcher.fetch_with_timeout(ticker, mode="historical"))
+            # Pass date range if available
+            fetch_kwargs = {"mode": "historical"}
+            if date_range:
+                fetch_kwargs["from_date"] = date_range.get("from")
+                fetch_kwargs["to_date"] = date_range.get("to")
+            tasks.append(fmp_fetcher.fetch_with_timeout(ticker, **fetch_kwargs))
             labels.append("historical")
             context["sources_queried"].append("FMP Historical API")
         if "fundamentals" not in labels:
             tasks.append(fmp_fetcher.fetch_with_timeout(ticker, mode="fundamentals"))
             labels.append("fundamentals")
             context["sources_queried"].append("FMP Fundamentals API")
+        if "price_change" not in labels:
+            tasks.append(fmp_fetcher.fetch_with_timeout(ticker, mode="price_change"))
+            labels.append("price_change")
+            context["sources_queried"].append("FMP Price Change API")
 
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -489,6 +554,10 @@ async def fetch_data_by_classification(
                     context["market_price"] = result["price"]
                 if "change_percent" in result and result["change_percent"] is not None:
                     context["market_change_percent"] = result["change_percent"]
+            
+            elif label == "price_change" and status == "success":
+                # Price change summary data from FMP
+                context["price_change_data"] = result
 
     # Ensure we always have a timestamp
     context.setdefault("timestamp", datetime.utcnow().isoformat())
@@ -531,6 +600,6 @@ def classify_query(user_query: str) -> str:
     
     Kept for backward compatibility.
     """
-    # Use new LLM-based classification (returns 5 values now)
-    query_type_str, _, _, _, _ = llm_classify_query(user_query)
+    # Use new LLM-based classification (returns 6 values now)
+    query_type_str, _, _, _, _, _ = llm_classify_query(user_query)
     return query_type_str
