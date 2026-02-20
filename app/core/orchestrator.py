@@ -13,7 +13,7 @@ from app.api.schemas import QueryResponse, Citation
 # Rule-based classifier - KEPT FOR REFERENCE BUT NOT USED
 # from app.core.classifier import get_classifier, QueryType
 from app.core.classifier import QueryType  # Keep QueryType enum for compatibility
-from app.context.builder import build_context, is_valid_ticker
+from app.context.builder import is_valid_ticker
 from app.llm.generator import (
     generate_answer, 
     llm_classify_query,  # NEW: LLM-based classification (optimized)
@@ -137,7 +137,7 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
     
     query_type_str, confidence, entities_list, general_answer, symbols_list, date_range = llm_classify_query(user_query)
     
-    print(f"✨ LLM Classification:")
+    print(f" LLM Classification:")
     print(f"   Type: {query_type_str}")
     print(f"   Confidence: {confidence}")
     print(f"   Entities: {entities_list if entities_list else 'None'}")
@@ -162,7 +162,7 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
     # STEP 2: Handle GENERAL queries (already answered in Step 1)
     # ========================================================================
     if query_type_enum == QueryType.GENERAL and general_answer:
-        print("✅ General query - returning answer from LLM (no data fetching needed)")
+        print("General query - returning answer from LLM (no data fetching needed)")
         
         return QueryResponse(
             answer=general_answer,
@@ -180,7 +180,7 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
     # STEP 2.5: Handle MARKET queries (multiple symbols)
     # ========================================================================
     if query_type_enum == QueryType.MARKET:
-        print("🌍 Market query detected")
+        print("Market query detected")
         
         # Validate and limit symbols from LLM
         if symbols_list:
@@ -328,9 +328,14 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
         print(f"✅ Fetched data for {len(entities_data)} entity/entities")
         
     else:
-        # No entities (general or market query)
-        context = await fetch_data_by_classification(user_query, [query_type_enum], date_range)
-        print(f"📊 Data fetched: {list(context.keys())}")
+        # No entities resolved - this should rarely happen as GENERAL/MARKET queries
+        # are already handled above (lines 164-269)
+        print("⚠️ No entities resolved - cannot fetch symbol-specific data")
+        context = {
+            "query": user_query,
+            "timestamp": datetime.utcnow().isoformat(),
+            "error": "No entities were resolved from the query"
+        }
     
     # ========================================================================
     # STEP 5: Check if we got data (error handling)
@@ -390,7 +395,7 @@ async def orchestrate_query(user_query: str) -> QueryResponse:
 
 
 async def fetch_data_by_classification(
-    symbol_or_query: str,
+    symbol: str,
     query_types: List[QueryType],
     date_range: Optional[dict] = None
 ) -> Dict:
@@ -398,8 +403,7 @@ async def fetch_data_by_classification(
     Fetch data from appropriate sources based on query classification.
     
     Args:
-        symbol_or_query: Either a resolved symbol (e.g., "BTC-USD", "AAPL") 
-                        or the original query if no symbol was resolved
+        symbol: A resolved ticker symbol (e.g., "BTC-USD", "AAPL")
         query_types: List of QueryType enums indicating what data to fetch
         date_range: Optional dict with 'from' and 'to' keys for date-based queries
     
@@ -411,24 +415,19 @@ async def fetch_data_by_classification(
     - MARKET → Mboum API (same endpoint, handles indexes like ^GSPC)
     - ANALYSIS → Multiple sources (price + fundamentals + historical)
     """
-    print(f"📡 Fetching data for query types: {[qt.value for qt in query_types]}")
+    print(f"Fetching data for query types: {[qt.value for qt in query_types]}")
     if date_range:
-        print(f"📅 Date range: {date_range.get('from')} to {date_range.get('to')}")
+        print(f"Date range: {date_range.get('from')} to {date_range.get('to')}")
 
-    # Determine if we have a symbol or need to extract one
-    # If symbol_or_query looks like a ticker (short, uppercase, with possible -, ., ^)
-    # use it directly, otherwise try to extract from query
-    ticker = symbol_or_query
-    if ' ' in symbol_or_query:
-        # It's a query, not a symbol - try to extract ticker
-        context = build_context(symbol_or_query)
-        ticker = context.get("ticker")
-    else:
-        # It's likely a resolved symbol - use it directly
-        context = {"ticker": ticker, "query": symbol_or_query}
-
-    # Track which external sources were queried for citation building
-    context["sources_queried"] = []
+    # Use the symbol directly (should already be resolved by entity resolver)
+    ticker = symbol
+    
+    # Build initial context
+    context = {
+        "ticker": ticker,
+        "query": symbol,
+        "sources_queried": []  # Track which external sources were queried
+    }
 
     price_fetcher = PriceFetcher()
     fmp_fetcher = FMPFetcher()
