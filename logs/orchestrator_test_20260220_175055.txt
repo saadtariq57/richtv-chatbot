@@ -1,0 +1,324 @@
+================================================================================
+ORCHESTRATOR QUERY TEST RESULTS
+================================================================================
+
+Test Run: 2026-02-20 17:50:56 UTC
+Total Duration: 211.06s
+Success Rate: 10/10 (100.0%)
+
+
+================================================================================
+TEST 1: Historical performance - specific timeframe
+================================================================================
+Query: "Last 7 trading days performance of Tesla."
+Duration: 8.51s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+As of February 20, 2026, Tesla (**TSLA**) has experienced a mixed performance over the last seven trading days.
+
+Here's a breakdown of Tesla's performance for the trading days available within the last seven days:
+
+*   **February 20, 2026:** The stock closed at $407.89, a decrease of approximately 0.10% from the previous day.
+*   **February 19, 2026:** Tesla saw a positive day, closing at $411.71, an increase of 1.10%.
+*   **February 18, 2026:** The stock closed at $411.32, a slight increase of about 0.05%.
+*   **February 17, 2026:** Tesla's stock closed at $410.63, marking a decrease of approximately 0.42%.
+*   **February 13, 2026:** The stock closed at $417.44, an increase of about 0.76%.
+
+The provided data covers five trading days within the last seven. The most recent trading day, February 20, 2026, saw a slight dip in Tesla's stock price. However, the days prior showed some positive movement, with February 19th being a notable gain.
+--------------------------------------------------------------------------------
+
+Citations (0):
+
+Context Details:
+   Classification Confidence: high
+   Entities: ['Tesla']
+   Resolved Symbols: ['TSLA']
+   Sources Used: ['historical']
+
+
+================================================================================
+TEST 2: Historical event-based query
+================================================================================
+Query: "Performance during COVID crash."
+Duration: 26.79s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+During the initial phase of the COVID-19 pandemic in March 2020, major market indices experienced significant volatility.
+
+The **Dow Jones Industrial Average** (^DJI) saw considerable fluctuations during this period:
+*   On March 23, 2020, it closed at 18,591.93, a decrease of 2.29% from the previous trading day.
+*   The preceding week was marked by sharp declines, with March 20, 2020, closing down 5.33% at 19,173.98, and March 16, 2020, closing down 3.49% at 20,188.52.
+*   There were also days of recovery, such as March 17, 2020, when the index gained 3.66%, and March 13, 2020, which saw a 5.51% increase.
+*   The period leading up to the most intense market downturn in March showed a general downward trend, with notable drops on March 12 (-4.44%) and March 11 (-4.27%).
+
+The provided data does not contain specific performance details for the "S&P 500" (represented by **S**) or the "Nasdaq" (represented by **KIQQ**) during the COVID crash period. Therefore, I cannot provide their performance during that time.
+--------------------------------------------------------------------------------
+
+Citations (0):
+
+Context Details:
+   Classification Confidence: high
+   Entities: ['S&P 500', 'Dow Jones', 'Nasdaq']
+   Resolved Symbols: ['S', '^DJI', 'KIQQ']
+   Sources Used: ['historical']
+
+
+================================================================================
+TEST 3: Comparison query - multiple entities
+================================================================================
+Query: "Which performed better over 1 year: Apple or Nasdaq?"
+Duration: 51.12s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+As of February 20, 2026, **Apple (AAPL)** performed better over the past year compared to the Nasdaq index.
+
+**Apple (AAPL)** experienced a 1-year price change of **6.74%**.
+
+The Nasdaq index, represented by **NQ=F**, had a 1-year price change of **12.61%**.
+--------------------------------------------------------------------------------
+
+Citations (0):
+
+Context Details:
+   Classification Confidence: high
+   Entities: ['Apple', 'Nasdaq']
+   Resolved Symbols: ['AAPL', 'NQ=F']
+   Sources Used: ['historical']
+
+
+================================================================================
+TEST 4: Historical performance - specific timeframe
+================================================================================
+Query: "Give me last 2 months performace of nvidia"
+Duration: 10.62s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+As of February 20, 2026, NVIDIA (**NVDA**) has experienced a mixed performance over the last two months.
+
+Looking at the period from late December 2025 to mid-February 2026, NVIDIA's stock saw a notable upward trend in early February 2026, with a significant gain of 4.94% on February 6th. However, this was followed by a period of decline, with several days showing losses, including a 3.17% drop on February 3rd and a 3.15% decrease on February 12th. More recently, the stock has shown some recovery, with a 0.96% increase on February 20th.
+
+Examining the broader two-month window, from the end of December 2025 to February 20, 2026, the provided data indicates a positive performance. Specifically, the 1M (one-month) performance is 5.64%, and the 3M (three-month) performance is 4.14%. This suggests that while there have been daily fluctuations, the overall trend over the last two months has been positive.
+
+The stock's price on February 20, 2026, closed at $188.37. The trading range for that day was between $185.94 and $190.33, with a volume of 100,521,114 shares.
+--------------------------------------------------------------------------------
+
+Citations (0):
+
+Context Details:
+   Classification Confidence: high
+   Entities: ['NVIDIA']
+   Resolved Symbols: ['NVDA']
+   Sources Used: ['historical']
+
+
+================================================================================
+TEST 5: Comparison query - volatility analysis
+================================================================================
+Query: "Compare Nvidia vs AMD volatility last 3 months."
+Duration: 13.29s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+As of February 20, 2026, **Nvidia** (**NVDA**) has experienced a 3-month price change of 4.14%, while **AMD** (**AMD**) has seen a 3-month price change of -3.50%.
+
+Looking at the daily price movements over the last three months, both **NVDA** and **AMD** have shown significant fluctuations. For instance, **NVDA** had a notable increase of 4.94% on February 6, 2026, and a decrease of 3.15% on February 12, 2026. Similarly, **AMD** experienced a substantial gain of 5.74% on February 6, 2026, followed by a significant drop of 6.89% on February 4, 2026.
+
+The provided data shows daily historical prices, which can be used to infer volatility. However, a direct quantitative measure of volatility (like standard deviation or beta) for the last three months is not explicitly available in the provided data.
+--------------------------------------------------------------------------------
+
+Citations (0):
+
+Context Details:
+   Classification Confidence: high
+   Entities: ['Nvidia', 'AMD']
+   Resolved Symbols: ['NVDA', 'AMD']
+   Sources Used: ['historical']
+
+
+================================================================================
+TEST 6: Multi-entity comparison - FAANG stocks
+================================================================================
+Query: "Which FAANG stock had the highest drawdown last year?"
+Duration: 48.3s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+To determine which FAANG stock experienced the highest drawdown last year (2025), I need to analyze the historical data for each of the FAANG stocks. A drawdown represents the peak-to-trough decline during a specific period.
+
+Based on the provided data, here's an analysis of the significant price drops for each FAANG stock in 2025:
+
+*   **Apple (AAPL)**: Experienced a notable drop of -13.86% on February 12, 2025, and another significant decline of -9.67% on October 10, 2025.
+*   **Meta Platforms (META)**: Saw a substantial decrease of -24.21% on February 27, 2025, and a -29.2% drop on April 10, 2025.
+*   **Amazon (AMZN)**: Had a significant decline of -24.69% on April 14, 2025, and a -14.76% drop on November 20, 2025.
+*   **Netflix (NFLX)**: Experienced a sharp decrease of -13.03% on February 21, 2025, and a -13.85% drop on September 23, 2025.
+
+Comparing these significant single-day drops within 2025, **Meta Platforms (META)** had the largest percentage decrease on April 10, 2025, with a drop of -29.2%.
+--------------------------------------------------------------------------------
+
+Citations (0):
+
+Context Details:
+   Classification Confidence: high
+   Entities: ['Apple', 'Facebook', 'Amazon', 'Netflix', 'Google']
+   Resolved Symbols: ['AAPL', 'META', 'AMZN', 'NFLX', 'GOOG']
+   Sources Used: ['historical']
+
+
+================================================================================
+TEST 7: Hypothetical investment scenario
+================================================================================
+Query: "If I invested $5,000 in Nvidia 2 years ago, what's it worth today?"
+Duration: 11.18s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+As of February 20, 2026, an investment of $5,000 in Nvidia (**NVDA**) made two years prior would be worth approximately $5,000 multiplied by the total percentage change over that period.
+
+To determine the exact value, we need the closing price from two years ago. Based on the provided historical data, the closing price on February 20, 2024, was $79.52. The closing price on February 20, 2026, was $188.37.
+
+The calculation is as follows:
+
+*   **Initial Investment:** $5,000
+*   **Price on February 20, 2024:** $79.52
+*   **Price on February 20, 2026:** $188.37
+
+The total percentage increase is calculated as:
+((Current Price - Past Price) / Past Price) * 100
+((188.37 - 79.52) / 79.52) * 100 = (108.85 / 79.52) * 100 ≈ 136.88%
+
+Therefore, your initial investment of $5,000 would have grown to:
+$5,000 * (1 + 1.3688) = $5,000 * 2.3688 = **$11,844.00**
+
+This indicates a significant increase in value over the two-year period.
+--------------------------------------------------------------------------------
+
+Citations (0):
+
+Context Details:
+   Classification Confidence: high
+   Entities: ['Nvidia']
+   Resolved Symbols: ['NVDA']
+   Sources Used: ['historical']
+
+
+================================================================================
+TEST 8: Reasoning query (testing incorrect assumption)
+================================================================================
+Query: "Why did Nvidia gain today?"
+Duration: 14.56s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+As of today, February 20, 2026, NVIDIA Corporation (**NVDA**) experienced a gain, closing at $188.37, an increase of $0.47 or 0.25%.
+
+Looking at its recent trading activity, **NVDA** opened at $186.57 and reached a high of $190.33 during the day, with a low of $185.9378. The trading volume for the day was 100,521,114 shares.
+
+Over the past week, **NVDA** has shown an upward trend, with a 5-day change of 0.47%. Its performance over the last month has been a gain of 5.78%, and over the last three months, it has increased by 4.27%. Year-to-date, however, **NVDA** has seen a slight decrease of 0.26%. Looking further back, the stock has experienced significant growth over longer periods, with a 1-year gain of 34.44% and a remarkable 3-year gain of 811.71%.
+--------------------------------------------------------------------------------
+
+Citations (0):
+
+Context Details:
+   Classification Confidence: medium
+   Entities: ['Nvidia']
+   Resolved Symbols: ['NVDA']
+   Sources Used: ['analysis']
+
+⚠️  Note: NVDA actually dropped - testing how bot handles incorrect assumptions
+
+
+================================================================================
+TEST 9: Market overview - current day
+================================================================================
+Query: "How did the US market perform today?"
+Duration: 7.48s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+As of today, February 20, 2026, the major US indices showed mixed performance.
+
+The **S&P 500** (**^GSPC**) closed higher, gaining 20.25 points, which is a 0.30% increase, to settle at 6882.14. This performance places it slightly below its 50-day average of 6894.63.
+
+In contrast, the **Dow Jones Industrial Average** (**^DJI**) experienced a slight decline, falling by 33.44 points, or 0.07%, to end the day at 49361.72. It is trading above its 50-day average of 48863.79.
+
+The **NASDAQ Composite** (**^IXIC**) saw a notable gain, rising by 123.29 points, or 0.54%, to close at 22806.02. This index is currently trading below its 50-day average of 23358.02.
+--------------------------------------------------------------------------------
+
+Citations (1):
+   - Mboum API - Market Data
+
+Context Details:
+   Classification Confidence: high
+   Sources Used: ['market']
+
+
+================================================================================
+TEST 10: General market overview
+================================================================================
+Query: "Give me the market update"
+Duration: 9.15s
+Status: SUCCESS
+
+Confidence: 0.6
+
+Answer:
+--------------------------------------------------------------------------------
+Here's a market update as of February 20, 2026.
+
+**Major Indices Performance:**
+
+The major US indices showed mixed performance today. The **S&P 500 (^GSPC)** closed higher, gaining 21.43 points, or 0.31%, to reach 6883.32. The **NASDAQ Composite (^IXIC)** also saw a positive trend, increasing by 129.16 points, or 0.57%, to settle at 22811.885. In contrast, the **Dow Jones Industrial Average (^DJI)** experienced a slight dip, falling by 26.10 points, or -0.05%, to close at 49369.06.
+
+**Key Stock Movements:**
+
+Among the prominent stocks, **Alphabet Inc. (GOOGL)** was a notable gainer, rising by 12.45 points, or 4.11%, to trade at 315.30. **Amazon.com, Inc. (AMZN)** also performed well, up by 4.16 points, or 2.03%, to reach 209.02. **Apple Inc. (AAPL)** saw a modest increase of 1.91 points, or 0.73%, closing at 262.49.
+
+On the other hand, **Microsoft Corporation (MSFT)** experienced a slight decline, down 1.54 points, or -0.39%, to 396.9215. **Tesla, Inc. (TSLA)** also closed lower, down 3.10 points, or -0.75%, at 408.61. **NVIDIA Corporation (NVDA)** had a positive day, gaining 0.67 points, or 0.36%, to trade at 188.57.
+
+**Cryptocurrency Market:**
+
+In the cryptocurrency space, **Bitcoin (BTC-USD)** saw an increase of 534.23, or 0.80%, trading at 67139.08. **Ethereum (ETH-USD)** also moved higher, up by 28.72, or 1.49%, to 1955.9626.
+
+**Commodities Update:**
+
+Gold futures (**GC=F**) experienced a significant rise, adding 92.70, or 1.85%, to reach 5090.10. Crude oil futures (**CL=F**) saw a slight decrease, down 0.17, or -0.26%, to trade at 66.23.
+--------------------------------------------------------------------------------
+
+Citations (1):
+   - Mboum API - Market Data
+
+Context Details:
+   Classification Confidence: high
+   Sources Used: ['market']
+

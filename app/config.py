@@ -11,7 +11,12 @@ class Settings(BaseSettings):
     fmp_api_key: Optional[str] = None
     fmp_base_url: str = "https://financialmodelingprep.com/api/v3"
     
-    # Future: postgres_url, redis_url
+    # Vector DB (Qdrant)
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: Optional[str] = None
+    
+    # In-memory / cache (Redis)
+    redis_url: str = "redis://localhost:6379/0"
     
     class Config:
         env_file = ".env"

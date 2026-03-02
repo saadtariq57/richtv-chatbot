@@ -1,5 +1,6 @@
 import json
 from typing import Optional, Tuple, List
+from datetime import datetime, timedelta
 from app.llm.client import get_llm_client
 
 
@@ -14,9 +15,17 @@ def generate_answer(context: dict, user_query: str) -> str:
     Returns:
         Generated answer text
     """
+    # Get current date for temporal context
+    current_date = datetime.utcnow().strftime("%B %d, %Y")  # e.g., "February 20, 2026"
+    current_date_iso = datetime.utcnow().strftime("%Y-%m-%d")  # e.g., "2026-02-20"
+    
     # Create prompt with enhanced instructions for engaging responses
     prompt = f"""
 You are RichTVBot, a knowledgeable financial assistant. Answer the user's question using ONLY the provided data.
+
+CURRENT DATE: {current_date} (ISO: {current_date_iso})
+
+When the user asks about "today", "now", "current", or relative dates, use this as your reference point.
 
 CRITICAL RULES:
 1. NEVER invent, estimate, or fabricate numbers
@@ -237,14 +246,40 @@ def llm_classify_query(user_query: str) -> Tuple[str, str, Optional[List[str]], 
         - symbols_list: List of symbols to fetch (only for MARKET queries)
         - date_range: Dict with "from" and "to" keys in YYYY-MM-DD format, or None
     """
+    # Get current date for temporal context
+    current_date = datetime.utcnow()
+    current_date_str = current_date.strftime("%Y-%m-%d")  # e.g., "2026-02-20"
+    
+    # Calculate common relative dates for the LLM's reference
+    seven_days_ago = (current_date - timedelta(days=7)).strftime("%Y-%m-%d")
+    one_month_ago = (current_date - timedelta(days=30)).strftime("%Y-%m-%d")
+    three_months_ago = (current_date - timedelta(days=90)).strftime("%Y-%m-%d")
+    six_months_ago = (current_date - timedelta(days=180)).strftime("%Y-%m-%d")
+    one_year_ago = (current_date - timedelta(days=365)).strftime("%Y-%m-%d")
+    two_years_ago = (current_date - timedelta(days=730)).strftime("%Y-%m-%d")
+    
     prompt = f"""
 You are a financial query classifier and data planner.
+
+CURRENT DATE: {current_date_str}
+
+Use this date when interpreting relative time references:
+- "today" / "now" = {current_date_str}
+- "last 7 days" / "last week" = from {seven_days_ago} to {current_date_str}
+- "last month" / "last 30 days" = from {one_month_ago} to {current_date_str}
+- "last 3 months" / "last quarter" = from {three_months_ago} to {current_date_str}
+- "last 6 months" = from {six_months_ago} to {current_date_str}
+- "last year" / "last 12 months" = from {one_year_ago} to {current_date_str}
+- "last 2 years" = from {two_years_ago} to {current_date_str}
+- "2 years ago" (as starting point) = {two_years_ago}
 
 IMPORTANT: 
 1. If the query is a GENERAL conceptual question, provide a complete answer immediately.
 2. If the query is a MARKET overview request, provide a LIST of symbols to fetch.
 3. For other data queries, just extract the entity.
 4. For HISTORICAL queries with date ranges, extract dates in YYYY-MM-DD format.
+5. When user asks about COVID crash, use date range: from=2020-02-20, to=2020-03-23
+6. For broad market questions WITHOUT specific entity (e.g., "Performance during COVID"), extract market indices as entities (S&P 500, Dow, Nasdaq)
 
 Query Types:
 1. PRICE - Single asset price
@@ -367,7 +402,15 @@ TYPE: historical
 CONFIDENCE: high
 ENTITIES: Apple, NVIDIA
 SYMBOLS: NONE
-DATE_RANGE: NONE
+DATE_RANGE: from={one_month_ago}, to={current_date_str}
+ANSWER: NONE
+
+Query: "Performance during COVID crash"
+TYPE: historical
+CONFIDENCE: high
+ENTITIES: S&P 500, Dow Jones, Nasdaq
+SYMBOLS: NONE
+DATE_RANGE: from=2020-02-20, to=2020-03-23
 ANSWER: NONE
 
 Query: "What is a dividend?"

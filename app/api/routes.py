@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from app.api.schemas import PromptRequest, QueryResponse
-from app.core.orchestrator import orchestrate_query
+from app.langgraph.graph import run_query
 
 router = APIRouter()
 
@@ -14,7 +14,7 @@ async def query_endpoint(request: PromptRequest):
         "prompt": "What's the AAPL price?"
     }
     """
-    response = await orchestrate_query(request.prompt)
+    response = await run_query(request.prompt)
     return response
 
 @router.get("/query", response_model=QueryResponse)
@@ -28,6 +28,6 @@ async def query_endpoint_get(prompt: str = Query(..., description="The financial
     Example:
     http://localhost:8000/query?prompt=What's%20the%20AAPL%20price
     """
-    response = await orchestrate_query(prompt)
+    response = await run_query(prompt)
     return response
 
