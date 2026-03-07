@@ -2,14 +2,21 @@
 LangGraph workflow: classification -> route -> [general | market | entity] -> finalize -> END.
 """
 
+import uuid
 from datetime import datetime
 from typing import Optional
+
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import QueryResponse
 from app.langgraph.state import GraphState
 from app.langgraph import nodes
+from app.services.conversation_service import (
+    get_or_create_conversation,
+    load_recent_messages,
+    save_turn,
+)
 
 
 def _route_after_classification(state: GraphState) -> str:
@@ -88,20 +95,44 @@ def get_graph():
     return _graph
 
 
-async def run_query(user_query: str, session_id: Optional[str] = None) -> QueryResponse:
+async def run_query(
+    user_query: str,
+    session: AsyncSession,
+    user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+) -> QueryResponse:
     """
     Run the orchestration graph for a single query and return the response.
 
+    If user_id is provided, conversation is created or resumed, recent messages
+    are loaded for context, and the turn is saved after the response.
+
     Args:
         user_query: The user's financial question.
-        session_id: Optional session id for conversation memory (future use).
+        session: Database session for conversation persistence.
+        user_id: Optional user id from main app; when set, conversation is used.
+        conversation_id: Optional UUID string to resume a conversation.
 
     Returns:
-        QueryResponse with answer, citations, confidence, and context.
+        QueryResponse with answer, citations, confidence, and conversation_id when applicable.
     """
     graph = get_graph()
-    initial: GraphState = {"user_query": user_query, "session_id": session_id}
-    # LangGraph supports async invoke
+    conv_id: Optional[uuid.UUID] = None
+    chat_history: Optional[list] = None
+
+    if user_id:
+        try:
+            conv_uuid = uuid.UUID(conversation_id) if conversation_id else None
+        except (ValueError, TypeError):
+            conv_uuid = None
+        conv_id = await get_or_create_conversation(session, user_id, conv_uuid)
+        chat_history = await load_recent_messages(session, conv_id, limit=20)
+
+    initial: GraphState = {
+        "user_query": user_query,
+        "chat_history": chat_history,
+        "conversation_id": str(conv_id) if conv_id else None,
+    }
     final_state = await graph.ainvoke(initial)
     response = final_state.get("response")
     if response is None:
@@ -111,5 +142,19 @@ async def run_query(user_query: str, session_id: Optional[str] = None) -> QueryR
             confidence=0.0,
             data_timestamp=datetime.utcnow().isoformat(),
             context={"error": "No response from graph"},
+            conversation_id=str(conv_id) if conv_id else None,
         )
+
+    if conv_id is not None:
+        await save_turn(
+            session,
+            conv_id,
+            user_message=user_query,
+            assistant_response=response.answer,
+            metadata={
+                "confidence": response.confidence,
+                "data_timestamp": response.data_timestamp,
+            },
+        )
+
     return response

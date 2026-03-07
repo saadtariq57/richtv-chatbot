@@ -18,6 +18,10 @@ class GraphState(TypedDict, total=False):
     # Input
     user_query: str
     session_id: Optional[str]
+    # Conversation context (last N messages for LLM)
+    chat_history: Optional[List[Dict[str, str]]]
+    # Set when using conversation flow; included in response
+    conversation_id: Optional[str]
 
     # Classification (from llm_classify_query)
     query_type_str: str

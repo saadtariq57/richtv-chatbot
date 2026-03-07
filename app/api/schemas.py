@@ -3,6 +3,8 @@ from typing import List, Optional
 
 class PromptRequest(BaseModel):
     prompt: str
+    user_id: Optional[str] = None
+    conversation_id: Optional[str] = None
 
 class Citation(BaseModel):
     source: str
@@ -13,5 +15,6 @@ class QueryResponse(BaseModel):
     citations: List[Citation] = []
     confidence: float
     data_timestamp: str
-    context: Optional[dict] = None  # Temporary for backward compatibility
+    context: Optional[dict] = None
+    conversation_id: Optional[str] = None
 

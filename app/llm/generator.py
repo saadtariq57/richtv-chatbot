@@ -1,24 +1,44 @@
 import json
-from typing import Optional, Tuple, List
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from app.llm.client import get_llm_client
 
 
-def generate_answer(context: dict, user_query: str) -> str:
+def generate_answer(
+    context: dict,
+    user_query: str,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+) -> str:
     """
     Generate an answer using LLM based on structured context.
-    
+
     Args:
         context: Structured financial data from fetchers
         user_query: User's question
-        
+        chat_history: Optional list of {"role": "user"|"assistant", "content": "..."} for context
+
     Returns:
         Generated answer text
     """
     # Get current date for temporal context
     current_date = datetime.utcnow().strftime("%B %d, %Y")  # e.g., "February 20, 2026"
     current_date_iso = datetime.utcnow().strftime("%Y-%m-%d")  # e.g., "2026-02-20"
-    
+
+    history_block = ""
+    if chat_history:
+        lines = []
+        for msg in chat_history:
+            role = msg.get("role", "user")
+            content = (msg.get("content") or "").strip()
+            if content:
+                lines.append(f"{role.capitalize()}: {content}")
+        if lines:
+            history_block = (
+                "Previous conversation (for context):\n"
+                + "\n".join(lines)
+                + "\n\n"
+            )
+
     # Create prompt with enhanced instructions for engaging responses
     prompt = f"""
 You are RichTVBot, a knowledgeable financial assistant. Answer the user's question using ONLY the provided data.
@@ -32,9 +52,10 @@ CRITICAL RULES:
 2. Use ONLY the exact data provided below
 3. If data is insufficient, say "I don't have enough data to answer that"
 4. DO NOT repeat the same information multiple times in your response
+5. Think step by step: state your reasoning before your conclusion. Ensure your conclusion follows from the data.
 
 RESPONSE STYLE:
-- Start with a clear summary/overview statement
+- Start with a clear summary that reflects the data. Do not state a conclusion until you have compared or verified the numbers.
 - Provide context and narrative, not just raw numbers
 - Group related information logically
 - Highlight notable trends or outliers
@@ -50,13 +71,13 @@ FORMATTING:
 - Use bullet points or natural paragraphs as appropriate
 - Include percentage changes in context, not just isolated numbers
 
-Data: {json.dumps(context, indent=2)}
+{history_block}Data: {json.dumps(context, indent=2)}
 
 User Question: {user_query}
 
 Answer:"""
     
-    # Use LLM client with slightly higher temperature for more natural language
+    # Use LLM client with lower temperature for more consistent reasoning
     llm = get_llm_client()
     response = llm.generate(prompt, temperature=0.4)
     

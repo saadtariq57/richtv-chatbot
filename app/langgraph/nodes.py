@@ -72,6 +72,7 @@ def build_general_response_node(state: GraphState) -> Dict[str, Any]:
                 "classification_confidence": state.get("confidence"),
                 "query_type": state.get("query_type_str"),
             },
+            conversation_id=state.get("conversation_id"),
         )
     }
 
@@ -137,6 +138,7 @@ def build_market_error_response_node(state: GraphState) -> Dict[str, Any]:
                 "classification_confidence": state.get("confidence"),
                 **state.get("context", {}),
             },
+            conversation_id=state.get("conversation_id"),
         )
     }
 
@@ -203,10 +205,11 @@ async def data_fetch_node(state: GraphState) -> Dict[str, Any]:
 
 
 def answer_node(state: GraphState) -> Dict[str, Any]:
-    """Generate LLM answer from context."""
+    """Generate LLM answer from context and optional chat history."""
     context = state.get("context") or {}
     user_query = state["user_query"]
-    llm_answer = generate_answer(context, user_query)
+    chat_history = state.get("chat_history")
+    llm_answer = generate_answer(context, user_query, chat_history=chat_history)
     return {"llm_answer": llm_answer}
 
 
@@ -239,5 +242,6 @@ def finalize_node(state: GraphState) -> Dict[str, Any]:
                 "resolved_symbols": state.get("resolved_symbols"),
                 "data": context,
             },
+            conversation_id=state.get("conversation_id"),
         )
     }
