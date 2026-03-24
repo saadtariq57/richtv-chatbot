@@ -22,6 +22,14 @@ class GraphState(TypedDict, total=False):
     chat_history: Optional[List[Dict[str, str]]]
     # Set when using conversation flow; included in response
     conversation_id: Optional[str]
+    # Explicit perception / reasoning loop state
+    observation: Dict[str, Any]
+    next_action: str
+    planner_rationale: Optional[str]
+    last_action: Optional[str]
+    iterations: int
+    max_iterations: int
+    should_retry: bool
 
     # Classification (from llm_classify_query)
     query_type_str: str

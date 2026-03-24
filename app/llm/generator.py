@@ -2,6 +2,144 @@ import json
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from app.llm.client import get_llm_client
+from app.llm.budget import get_default_chat_history_token_budget
+from app.llm.prompt_builder import (
+    build_chat_history_section,
+    build_prompt,
+    format_labeled_section,
+)
+from app.llm.budget import PromptSection
+
+
+def _chat_history_token_cap(effective_input_budget: int) -> int:
+    """Reserve a bounded slice of the prompt budget for raw chat history."""
+
+    return min(get_default_chat_history_token_budget(), effective_input_budget)
+
+
+def _build_budgeted_prompt(
+    *,
+    llm,
+    required_sections: List[PromptSection],
+    chat_history: Optional[List[Dict[str, str]]] = None,
+    chat_history_title: str = "Previous conversation",
+) -> str:
+    """Build a prompt within budget, with a compact fallback if needed."""
+
+    budget = llm.default_budget
+    sections = list(required_sections)
+
+    if chat_history:
+        sections.insert(
+            1,
+            build_chat_history_section(
+                chat_history,
+                priority=10,
+                llm_client=llm,
+                max_tokens=_chat_history_token_cap(budget.effective_input_budget),
+                title=chat_history_title,
+                required=True,
+            ),
+        )
+
+    try:
+        build_result = build_prompt(sections, budget=budget, llm_client=llm)
+        return build_result.prompt
+    except ValueError:
+        fallback_sections = [
+            section
+            for section in required_sections
+            if section.name != "data"
+        ]
+
+        data_section = next(
+            (section for section in required_sections if section.name == "data"),
+            None,
+        )
+        if data_section is not None:
+            compact_data = _compact_labeled_json_section("Data", data_section.text)
+            fallback_sections.insert(
+                len(fallback_sections) - 2,
+                PromptSection(
+                    name="data",
+                    text=compact_data,
+                    priority=3,
+                    required=True,
+                ),
+            )
+
+        fallback_result = build_prompt(
+            fallback_sections,
+            budget=budget,
+            llm_client=llm,
+        )
+        return fallback_result.prompt
+
+
+def _compact_labeled_json_section(title: str, labeled_section_text: str) -> str:
+    """Re-serialize a labeled JSON section in compact form when the prompt is too large."""
+
+    prefix = f"{title}:\n"
+    if not labeled_section_text.startswith(prefix):
+        return labeled_section_text
+
+    payload = labeled_section_text[len(prefix):].strip()
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return labeled_section_text
+
+    return format_labeled_section(
+        title,
+        json.dumps(parsed, separators=(",", ":"), ensure_ascii=True),
+    )
+
+
+def generate_conversational_answer(
+    user_query: str,
+    chat_history: List[Dict[str, str]],
+) -> str:
+    """
+    Answer a general/conversational question using only the chat history as context.
+
+    Used when the user asks something about the conversation itself (e.g. "what
+    did I just ask?") or any general question where the history IS the relevant
+    data — not financial market data.
+    """
+    llm = get_llm_client()
+    prompt = _build_budgeted_prompt(
+        llm=llm,
+        required_sections=[
+            PromptSection(
+                name="system_instructions",
+                text=(
+                    "You are RichTVBot, a knowledgeable financial assistant "
+                    "with memory of the current conversation."
+                ),
+                priority=1,
+                required=True,
+            ),
+            PromptSection(
+                name="user_question",
+                text=f"User Question: {user_query}",
+                priority=2,
+                required=True,
+            ),
+            PromptSection(
+                name="answer_instruction",
+                text="Answer using the conversation history above. Be concise and accurate.",
+                priority=3,
+                required=True,
+            ),
+        ],
+        chat_history=chat_history,
+    )
+    response = llm.generate(
+        prompt,
+        temperature=0.3,
+        max_output_tokens=llm.default_budget.reserved_output_tokens,
+    )
+    return response or "I couldn't generate a response."
 
 
 def generate_answer(
@@ -24,24 +162,13 @@ def generate_answer(
     current_date = datetime.utcnow().strftime("%B %d, %Y")  # e.g., "February 20, 2026"
     current_date_iso = datetime.utcnow().strftime("%Y-%m-%d")  # e.g., "2026-02-20"
 
-    history_block = ""
-    if chat_history:
-        lines = []
-        for msg in chat_history:
-            role = msg.get("role", "user")
-            content = (msg.get("content") or "").strip()
-            if content:
-                lines.append(f"{role.capitalize()}: {content}")
-        if lines:
-            history_block = (
-                "Previous conversation (for context):\n"
-                + "\n".join(lines)
-                + "\n\n"
-            )
-
-    # Create prompt with enhanced instructions for engaging responses
-    prompt = f"""
-You are RichTVBot, a knowledgeable financial assistant. Answer the user's question using ONLY the provided data.
+    llm = get_llm_client()
+    prompt = _build_budgeted_prompt(
+        llm=llm,
+        required_sections=[
+            PromptSection(
+                name="system_instructions",
+                text=f"""You are RichTVBot, a knowledgeable financial assistant. Answer the user's question using ONLY the provided data.
 
 CURRENT DATE: {current_date} (ISO: {current_date_iso})
 
@@ -69,17 +196,39 @@ FORMATTING:
 - Use clear, readable structure
 - Bold key stock symbols for emphasis (e.g., **NVDA**)
 - Use bullet points or natural paragraphs as appropriate
-- Include percentage changes in context, not just isolated numbers
+- Include percentage changes in context, not just isolated numbers""",
+                priority=1,
+                required=True,
+            ),
+            PromptSection(
+                name="data",
+                text=format_labeled_section("Data", json.dumps(context, indent=2)),
+                priority=3,
+                required=True,
+            ),
+            PromptSection(
+                name="user_question",
+                text=f"User Question: {user_query}",
+                priority=4,
+                required=True,
+            ),
+            PromptSection(
+                name="answer_instruction",
+                text="Answer:",
+                priority=5,
+                required=True,
+            ),
+        ],
+        chat_history=chat_history,
+        chat_history_title="Previous conversation (for context)",
+    )
 
-{history_block}Data: {json.dumps(context, indent=2)}
-
-User Question: {user_query}
-
-Answer:"""
-    
     # Use LLM client with lower temperature for more consistent reasoning
-    llm = get_llm_client()
-    response = llm.generate(prompt, temperature=0.4)
+    response = llm.generate(
+        prompt,
+        temperature=0.4,
+        max_output_tokens=llm.default_budget.reserved_output_tokens,
+    )
     
     if response:
         return response

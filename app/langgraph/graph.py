@@ -1,5 +1,5 @@
 """
-LangGraph workflow: classification -> route -> [general | market | entity] -> finalize -> END.
+LangGraph workflow with an explicit perceive -> reason -> act -> observe loop.
 """
 
 import uuid
@@ -14,27 +14,34 @@ from app.langgraph.state import GraphState
 from app.langgraph import nodes
 from app.services.conversation_service import (
     get_or_create_conversation,
-    load_recent_messages,
+    load_recent_messages_by_budget,
     save_turn,
 )
+from app.services.title_service import generate_conversation_title
 
 
-def _route_after_classification(state: GraphState) -> str:
-    """Route to general response, market fetch, or entity resolution."""
-    if state.get("query_type_enum") is None:
-        return "entity_resolution"
-    from app.core.classifier import QueryType
-    if state["query_type_enum"] == QueryType.GENERAL and state.get("general_answer"):
+def _route_after_reason(state: GraphState) -> str:
+    """Route to the action chosen by the reasoning step."""
+    next_action = state.get("next_action")
+    if next_action == "build_general_response":
         return "build_general_response"
-    if state["query_type_enum"] == QueryType.MARKET:
+    if next_action == "market_fetch":
         return "market_fetch"
-    return "entity_resolution"
+    if next_action == "entity_resolution":
+        return "entity_resolution"
+    if next_action == "data_fetch":
+        return "data_fetch"
+    if next_action == "build_market_error_response":
+        return "build_market_error_response"
+    return "answer"
 
 
-def _route_after_market_fetch(state: GraphState) -> str:
-    """Route to error response or to answer generation."""
+def _route_after_observe(state: GraphState) -> str:
+    """Route back into the loop after observing action results."""
     if state.get("market_error"):
         return "build_market_error_response"
+    if state.get("should_retry") and state.get("iterations", 0) < state.get("max_iterations", 3):
+        return "perceive"
     return "answer"
 
 
@@ -47,37 +54,39 @@ def create_graph(checkpointer=None):
                       Enables conversation memory and human-in-the-loop later.
     """
     builder = StateGraph(GraphState)
-
     # Nodes
-    builder.add_node("classification", nodes.classification_node)
+    builder.add_node("perceive", nodes.perceive_node)
+    builder.add_node("reason", nodes.reason_node)
     builder.add_node("build_general_response", nodes.build_general_response_node)
     builder.add_node("market_fetch", nodes.market_fetch_node)
     builder.add_node("build_market_error_response", nodes.build_market_error_response_node)
     builder.add_node("entity_resolution", nodes.entity_resolution_node)
     builder.add_node("data_fetch", nodes.data_fetch_node)
+    builder.add_node("observe", nodes.observe_node)
     builder.add_node("answer", nodes.answer_node)
     builder.add_node("validation", nodes.validation_node)
     builder.add_node("finalize", nodes.finalize_node)
 
     # Entry
-    builder.set_entry_point("classification")
+    builder.set_entry_point("perceive")
 
-    builder.add_conditional_edges("classification", _route_after_classification)
-    # Conditional: after classification
+    builder.add_edge("perceive", "reason")
+    builder.add_conditional_edges("reason", _route_after_reason)
 
     # General path
     builder.add_edge("build_general_response", END)
 
-    # Market path
-    builder.add_conditional_edges("market_fetch", _route_after_market_fetch)
+    # Action -> observe loop
+    builder.add_edge("market_fetch", "observe")
+    builder.add_edge("entity_resolution", "observe")
+    builder.add_edge("data_fetch", "observe")
+    builder.add_conditional_edges("observe", _route_after_observe)
+
+    # Final answer path
     builder.add_edge("build_market_error_response", END)
     builder.add_edge("answer", "validation")
     builder.add_edge("validation", "finalize")
     builder.add_edge("finalize", END)
-
-    # Entity path
-    builder.add_edge("entity_resolution", "data_fetch")
-    builder.add_edge("data_fetch", "answer")
 
     graph = builder.compile(checkpointer=checkpointer)
     return graph
@@ -119,6 +128,7 @@ async def run_query(
     graph = get_graph()
     conv_id: Optional[uuid.UUID] = None
     chat_history: Optional[list] = None
+    is_first_turn: bool = False
 
     if user_id:
         try:
@@ -126,15 +136,18 @@ async def run_query(
         except (ValueError, TypeError):
             conv_uuid = None
         conv_id = await get_or_create_conversation(session, user_id, conv_uuid)
-        chat_history = await load_recent_messages(session, conv_id, limit=20)
+        chat_history = await load_recent_messages_by_budget(session, conv_id)
+        is_first_turn = not bool(chat_history)
 
     initial: GraphState = {
         "user_query": user_query,
         "chat_history": chat_history,
         "conversation_id": str(conv_id) if conv_id else None,
+        "iterations": 0,
+        "max_iterations": 3,
     }
     final_state = await graph.ainvoke(initial)
-    response = final_state.get("response")
+    response: Optional[QueryResponse] = final_state.get("response")
     if response is None:
         return QueryResponse(
             answer="An error occurred while processing your query.",
@@ -146,6 +159,17 @@ async def run_query(
         )
 
     if conv_id is not None:
+        # Best‑effort title generation for new conversations.
+        if is_first_turn:
+            title = await generate_conversation_title(user_query, response.answer)
+            if title:
+                from app.models.conversation import Conversation  # local import to avoid cycles
+
+                db_conv = await session.get(Conversation, conv_id)
+                if db_conv and not db_conv.title:
+                    db_conv.title = title
+                    await session.commit()
+        # Persist this turn (user + assistant messages).
         await save_turn(
             session,
             conv_id,

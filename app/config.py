@@ -1,11 +1,34 @@
-from pydantic_settings import BaseSettings
 from typing import Optional
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     # LLM Configuration
     gemini_api_key: str
     gemini_model: str = "gemini-2.5-flash-lite"
+    llm_context_window: int = Field(
+        default=128000,
+        validation_alias=AliasChoices("LLM_CONTEXT_WINDOW", "GEMINI_CONTEXT_WINDOW"),
+    )
+    llm_soft_input_limit: int = Field(
+        default=12000,
+        validation_alias=AliasChoices("LLM_SOFT_INPUT_LIMIT", "PROMPT_SOFT_INPUT_LIMIT"),
+    )
+    llm_reserved_output_tokens: int = Field(
+        default=2048,
+        validation_alias=AliasChoices(
+            "LLM_RESERVED_OUTPUT_TOKENS",
+            "PROMPT_RESERVED_OUTPUT_TOKENS",
+        ),
+    )
+    llm_safety_margin_tokens: int = Field(
+        default=1000,
+        validation_alias=AliasChoices(
+            "LLM_SAFETY_MARGIN_TOKENS",
+            "PROMPT_SAFETY_MARGIN_TOKENS",
+        ),
+    )
 
     # Data Source API Keys
     mboum_api_key: Optional[str] = None
